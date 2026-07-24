@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Question Trainer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎓</text></svg>">
+  <link rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="topbar__brand">
+      <span class="topbar__logo">🎓</span>
+      <span>Question&nbsp;Trainer</span>
+    </div>
+
+    <div class="topbar__filters">
+      <label class="field">
+        <span class="field__label">Тема</span>
+        <select id="theme-select">
+          <option value="">Все темы</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span class="field__label">Подтема</span>
+        <select id="subtheme-select" disabled>
+          <option value="">Все подтемы</option>
+        </select>
+      </label>
+
+      <label class="switch" title="Пропускать вопросы без ответа">
+        <input type="checkbox" id="answered-only" checked>
+        <span class="switch__track"><span class="switch__thumb"></span></span>
+        <span class="switch__label">Только с ответом</span>
+      </label>
+    </div>
+
+    <div class="topbar__actions">
+      <button class="icon-btn" id="theme-toggle" title="Светлая / тёмная тема">◐</button>
+      <button class="icon-btn" id="refresh-btn" title="Перечитать из GitLab">⟳</button>
+    </div>
+  </header>
+
+  <main class="stage">
+    <section class="card" id="card" hidden>
+      <nav class="crumbs" id="crumbs" aria-label="Раздел"></nav>
+      <h1 class="question" id="question"></h1>
+
+      <details class="answer" id="answer">
+        <summary class="answer__toggle">
+          <span class="answer__chevron" aria-hidden="true"></span>
+          <span class="answer__toggle-text">Показать ответ</span>
+          <kbd class="answer__kbd">Space</kbd>
+        </summary>
+        <div class="answer__body prose" id="answer-body"></div>
+      </details>
+
+      <p class="no-answer" id="no-answer" hidden>Ответ ещё не записан.</p>
+    </section>
+
+    <section class="card card--skeleton" id="skeleton">
+      <div class="skeleton skeleton--crumbs"></div>
+      <div class="skeleton skeleton--title"></div>
+      <div class="skeleton skeleton--toggle"></div>
+    </section>
+
+    <section class="card card--message" id="message" hidden>
+      <h2 class="message__title" id="message-title"></h2>
+      <p class="message__text" id="message-text"></p>
+      <button class="btn btn--ghost" id="message-retry">Повторить</button>
+    </section>
+  </main>
+
+  <footer class="dock">
+    <button class="btn btn--primary" id="next-btn">
+      Следующий вопрос
+      <kbd>N</kbd>
+    </button>
+    <div class="dock__meta">
+      <span id="progress">—</span>
+      <span class="dock__sep">·</span>
+      <span id="stale-badge" class="badge badge--warn" hidden>офлайн-копия</span>
+      <button class="link-btn" id="reset-seen">сбросить прогресс</button>
+    </div>
+  </footer>
+</body>
+
+</html>
