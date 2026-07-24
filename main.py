@@ -78,7 +78,7 @@ def _pick(pool: list[Question], seen: Iterable[str]) -> tuple[Question, bool]:
 
 @app.get("/")
 def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/api/index")
