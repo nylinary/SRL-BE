@@ -22,5 +22,15 @@ dependencies = [
 
 [project.optional-dependencies]
 # FSRS weight training for the Settings tab. Pulls in torch/numpy/pandas/tqdm.
-#   pip install ".[optimizer]"
-optimizer = ["fsrs[optimizer]>=6,<7"]
+#   uv sync --extra optimizer
+optimizer = ["fsrs[optimizer]>=6,<7", "torch"]
+
+# On Linux the default torch is the ~2.5 GB CUDA build; there's no GPU on Railway, so
+# pull the lean CPU-only wheel instead (~200 MB). macOS keeps its normal PyPI wheel.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
