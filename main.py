@@ -40,7 +40,7 @@ class RandomRequest(BaseModel):
     subtheme: str | None = None
     answered_only: bool = True
     mode: str = "spaced"  # "spaced" (due first) or "random"
-    seen: list[str] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)  # the card on screen — no repeat in a row
 
 
 class ReviewRequest(BaseModel):
@@ -97,20 +97,20 @@ def _load() -> list[Question]:
 def _pick(
     pool: list[Question],
     schedules: dict[str, dict],
-    seen: set[str],
+    exclude: set[str],
     mode: str,
     now: float,
-) -> tuple[Question, bool]:
-    """Pick the next question. Returns (question, cycled).
+) -> Question:
+    """Pick the next question — FSRS order drives it, no session state.
 
     In spaced mode the order is: overdue cards (most overdue first), then
-    never-graded cards, then cards scheduled but not yet due. Cards already shown
-    this session are skipped until the pool is exhausted, then we cycle
-    (``cycled=True``) so a study session never dead-ends.
+    never-graded cards, then cards scheduled but not yet due. ``exclude`` holds the
+    card currently on screen so it isn't served twice in a row (e.g. on Skip); the
+    schedule itself decides everything else.
     """
     if mode == "random":
-        fresh = [q for q in pool if q.id not in seen]
-        return (random.choice(fresh), False) if fresh else (random.choice(pool), True)
+        candidates = [q for q in pool if q.id not in exclude]
+        return random.choice(candidates or pool)
 
     def ordered(candidates: list[Question]) -> list[Question]:
         due, new, upcoming = [], [], []
@@ -127,10 +127,8 @@ def _pick(
         upcoming.sort(key=lambda q: schedules[q.id]["due"])  # soonest first
         return due + new + upcoming
 
-    queue = ordered([q for q in pool if q.id not in seen])
-    if queue:
-        return queue[0], False
-    return ordered(pool)[0], True
+    queue = ordered(pool)
+    return next((q for q in queue if q.id not in exclude), queue[0])
 
 
 @app.get("/")
@@ -194,7 +192,7 @@ def random_question(req: RandomRequest):
     now_epoch = time.time()
     now_dt = datetime.now(timezone.utc)
     schedules = store.schedules()
-    question, cycled = _pick(pool, schedules, set(req.seen), req.mode, now_epoch)
+    question = _pick(pool, schedules, set(req.exclude), req.mode, now_epoch)
 
     due_count = sum(
         1 for q in pool if q.id in schedules and schedules[q.id]["due"] <= now_epoch
@@ -206,7 +204,6 @@ def random_question(req: RandomRequest):
         "pool_size": len(pool),
         "due_count": due_count,
         "new_count": new_count,
-        "cycle_completed": cycled,
     }
 
 

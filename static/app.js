@@ -1,4 +1,3 @@
-const SEEN_KEY = 'qt:seen';
 const THEME_KEY = 'qt:theme';
 const FILTERS_KEY = 'qt:filters';
 
@@ -53,7 +52,7 @@ const dom = {
 };
 
 let index = null;          // theme tree from /api/index
-let seen = loadSeen();     // ids shown this session, per filter key (session no-repeat)
+let shown = 0;             // cards shown this session (in-memory counter only)
 let current = null;        // the question on screen
 let poolSize = 0;
 let busy = false;
@@ -63,11 +62,6 @@ const stats = { rows: [], now: 0, sortKey: 'next_due', sortDir: 1 };
 
 /* ------------------------------------------------------------------ state */
 
-function loadSeen() {
-  try { return JSON.parse(localStorage.getItem(SEEN_KEY)) || {}; } catch { return {}; }
-}
-const saveSeen = () => localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
-
 function filters() {
   return {
     theme: dom.theme.value || null,
@@ -75,18 +69,6 @@ function filters() {
     answered_only: dom.answeredOnly.checked,
     mode: dom.spacedMode.checked ? 'spaced' : 'random',
   };
-}
-function filterKey() {
-  const f = filters();
-  return [f.theme || '*', f.subtheme || '*', f.answered_only ? 'a' : 'all'].join('|');
-}
-const seenIds = () => seen[filterKey()] || [];
-function markSeen(id) {
-  const key = filterKey();
-  const ids = seen[key] || [];
-  if (!ids.includes(id)) ids.push(id);
-  seen[key] = ids;
-  saveSeen();
 }
 const saveFilters = () => localStorage.setItem(FILTERS_KEY, JSON.stringify(filters()));
 
@@ -141,7 +123,7 @@ function fail(title, text) {
 }
 
 function updateProgress() {
-  dom.progress.textContent = poolSize ? `${seenIds().length} / ${poolSize} за сессию` : '—';
+  dom.progress.textContent = poolSize ? `${shown} за сессию · ${poolSize} в наборе` : '—';
 }
 
 function renderCrumbs(question) {
@@ -204,7 +186,7 @@ function renderQuestion(payload) {
   dom.dueBadge.hidden = (payload.due_count + payload.new_count) === 0;
   dom.dueBadge.textContent = `${payload.due_count} к повтору · ${payload.new_count} новых`;
 
-  markSeen(current.id);      // viewing counts only for session no-repeat, never for FSRS
+  shown += 1;
   updateProgress();
   show('question');
   dom.card.classList.remove('card--enter');
@@ -270,7 +252,7 @@ async function nextQuestion() {
     const res = await fetch('/api/questions/random', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...filters(), seen: seenIds() }),
+      body: JSON.stringify({ ...filters(), exclude: current ? [current.id] : [] }),
     });
     const payload = await res.json();
 
@@ -279,7 +261,6 @@ async function nextQuestion() {
         payload.detail || `HTTP ${res.status}`);
       return;
     }
-    if (payload.cycle_completed) seen[filterKey()] = [];   // full circle — new round
     renderQuestion(payload);
   } catch (error) {
     fail('Ошибка загрузки', error.message);
@@ -444,7 +425,7 @@ function renderOptimizer(s) {
   if (!s.optimizer_available) {
     dom.optimWarn.hidden = false;
     dom.optimWarn.textContent =
-      'Оптимизатор не установлен на сервере. Добавьте его: pip install "fsrs[optimizer]"';
+      'Оптимизатор не установлен на сервере. Добавьте его: uv sync --extra optimizer';
     dom.optimHint.textContent = '';
   } else {
     dom.optimWarn.hidden = true;

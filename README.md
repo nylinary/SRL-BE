@@ -22,16 +22,22 @@ Questions without a body are kept and marked "ответ ещё не запис�
 
 ## Setup
 
-Requires **PostgreSQL** for review history.
+Needs **[uv](https://docs.astral.sh/uv/)** for dependencies (Python 3.11–3.12, pinned in
+`.python-version`) and **PostgreSQL** for review history.
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -r requirements.txt
+uv sync                       # creates .venv (Python 3.12) from uv.lock
 createdb questions            # or point DATABASE_URL at any existing Postgres
 cp .env.example .env          # set DATABASE_URL + a GitLab token (read_repository scope)
-.venv/bin/uvicorn main:app --reload
+uv run uvicorn main:app --reload
 ```
 
-Open http://127.0.0.1:8000. The `progress` / `reviews` tables are created on first run.
+Open http://127.0.0.1:8000. The `progress` / `reviews` / `fsrs_params` tables are created
+on first run. To enable the Settings-tab optimizer (installs torch):
+
+```bash
+uv sync --extra optimizer
+```
 
 Keyboard: `1`–`4` grade (Again / Hard / Good / Easy), `N` / `→` skip, `Space` / `Enter`
 reveal the answer.
@@ -63,10 +69,11 @@ button trains weights on *your* review history, stores them in `fsrs_params`, an
 them live — no restart. Below the threshold the run is refused rather than silently
 persisting default weights over your current ones.
 
-Training runs py-fsrs's `Optimizer`, which needs the extra:
+Training runs py-fsrs's `Optimizer`, which needs the extra (torch/numpy/pandas; Python
+3.11/3.12 only — no torch wheels for 3.13, which is why `.python-version` pins 3.12):
 
 ```bash
-pip install "fsrs[optimizer]"   # torch/numpy/pandas; use Python 3.11/3.12 — no torch wheels for 3.13
+uv sync --extra optimizer
 ```
 
 Without it the tab still shows progress; the button explains what to install. The trained
@@ -139,8 +146,8 @@ syntax is expanded rather than leaked as literal text: `{% hint %}` → callouts
 ## Tests
 
 ```bash
-.venv/bin/python tests/test_parser.py   # parsing & GitBook rendering
-.venv/bin/python tests/test_store.py    # FSRS scheduling & persistence (PostgreSQL)
+uv run python tests/test_parser.py   # parsing & GitBook rendering
+uv run python tests/test_store.py    # FSRS scheduling & persistence (PostgreSQL)
 ```
 
 `test_parser` covers heading tracking, nested `<details>`, fenced code containing

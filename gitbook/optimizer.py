@@ -116,7 +116,7 @@ class OptimizerService:
         """Optimise weights on the review log, persist, and apply live."""
         if not optimizer_available():
             raise OptimizerUnavailable(
-                'The optimizer is not installed. Add it with: pip install "fsrs[optimizer]"'
+                "The optimizer is not installed. Add it with: uv sync --extra optimizer"
             )
 
         logs = self.store.review_logs()
