@@ -7,9 +7,19 @@ const el = (id) => document.getElementById(id);
 const dom = {
   tabTrain: el('tab-train'),
   tabStats: el('tab-stats'),
+  tabSettings: el('tab-settings'),
   viewTrain: el('view-train'),
   viewStats: el('view-stats'),
+  viewSettings: el('view-settings'),
   trainFilters: el('train-filters'),
+  setRetention: el('set-retention'),
+  setSource: el('set-source'),
+  optimFill: el('optim-fill'),
+  optimCount: el('optim-count'),
+  optimHint: el('optim-hint'),
+  optimizeBtn: el('optimize-btn'),
+  optimStatus: el('optim-status'),
+  optimWarn: el('optim-warn'),
   card: el('card'),
   crumbs: el('crumbs'),
   question: el('question'),
@@ -47,6 +57,7 @@ let seen = loadSeen();     // ids shown this session, per filter key (session no
 let current = null;        // the question on screen
 let poolSize = 0;
 let busy = false;
+let optimizing = false;    // an optimizer run is in flight (survives a status refresh)
 
 const stats = { rows: [], now: 0, sortKey: 'next_due', sortDir: 1 };
 
@@ -106,13 +117,15 @@ function dueLabel(nextDue, now) {
 /* -------------------------------------------------------------------- views */
 
 function showTab(name) {
-  const train = name === 'train';
-  dom.tabTrain.classList.toggle('is-active', train);
-  dom.tabStats.classList.toggle('is-active', !train);
-  dom.viewTrain.hidden = !train;
-  dom.viewStats.hidden = train;
-  dom.trainFilters.hidden = !train;
-  if (!train) loadStats();
+  dom.tabTrain.classList.toggle('is-active', name === 'train');
+  dom.tabStats.classList.toggle('is-active', name === 'stats');
+  dom.tabSettings.classList.toggle('is-active', name === 'settings');
+  dom.viewTrain.hidden = name !== 'train';
+  dom.viewStats.hidden = name !== 'stats';
+  dom.viewSettings.hidden = name !== 'settings';
+  dom.trainFilters.hidden = name !== 'train';
+  if (name === 'stats') loadStats();
+  if (name === 'settings') loadOptimizerStatus();
 }
 
 function show(view) {
@@ -393,6 +406,78 @@ function scorePill(value) {
   return span;
 }
 
+/* -------------------------------------------------------------- settings tab */
+
+const dateTimeFmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+
+function sourceLabel(current) {
+  if (current.source === 'trained') {
+    const when = current.trained_at ? ' · ' + dateTimeFmt.format(new Date(current.trained_at * 1000)) : '';
+    return `Обучено на ${current.trained_on_reviews} повторах${when}`;
+  }
+  if (current.source === 'custom') return 'Заданы вручную (FSRS_PARAMETERS)';
+  return 'По умолчанию (популяционные)';
+}
+
+async function loadOptimizerStatus() {
+  if (optimizing) return;               // don't disturb an in-flight run's status/message
+  dom.optimStatus.textContent = '';
+  dom.optimStatus.className = 'optim__status';
+  try {
+    const res = await fetch('/api/optimizer/status');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderOptimizer(await res.json());
+  } catch (error) {
+    dom.optimHint.textContent = 'Не удалось загрузить статус: ' + error.message;
+  }
+}
+
+function renderOptimizer(s) {
+  dom.setRetention.textContent = `${Math.round(s.retention * 100)}%`;
+  dom.setSource.textContent = sourceLabel(s.current);
+
+  const pct = Math.min(100, Math.round((s.effective_reviews / s.required) * 100));
+  dom.optimFill.style.width = `${pct}%`;
+  dom.optimFill.classList.toggle('optim__fill--ready', s.ready);
+  dom.optimCount.textContent = `${s.effective_reviews} / ${s.required} повторов для обучения`;
+
+  if (!s.optimizer_available) {
+    dom.optimWarn.hidden = false;
+    dom.optimWarn.textContent =
+      'Оптимизатор не установлен на сервере. Добавьте его: pip install "fsrs[optimizer]"';
+    dom.optimHint.textContent = '';
+  } else {
+    dom.optimWarn.hidden = true;
+    dom.optimHint.textContent = s.ready
+      ? `Достаточно данных · всего повторов: ${s.review_count}`
+      : `Ещё ${s.remaining} повторений в разные дни (всего сделано: ${s.review_count})`;
+  }
+  dom.optimizeBtn.disabled = optimizing || !(s.ready && s.optimizer_available);
+}
+
+async function runOptimizer() {
+  if (optimizing) return;
+  optimizing = true;
+  dom.optimizeBtn.disabled = true;
+  dom.optimStatus.textContent = 'Обучение… это может занять до минуты';
+  dom.optimStatus.className = 'optim__status optim__status--busy';
+  try {
+    const res = await fetch('/api/optimizer/run', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+    optimizing = false;
+    renderOptimizer(data);   // reflects the fresh (trained) status on the button
+    dom.optimStatus.textContent =
+      `Готово — веса обновлены и применены (${data.weights.length} параметров), без перезапуска`;
+    dom.optimStatus.className = 'optim__status optim__status--ok';
+  } catch (error) {
+    optimizing = false;
+    dom.optimStatus.textContent = 'Ошибка: ' + error.message;
+    dom.optimStatus.className = 'optim__status optim__status--err';
+    dom.optimizeBtn.disabled = false;   // allow a retry
+  }
+}
+
 /* --------------------------------------------------------------- controls */
 
 const HLJS_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles';
@@ -420,6 +505,8 @@ function restorePreferences() {
 function bind() {
   dom.tabTrain.addEventListener('click', () => showTab('train'));
   dom.tabStats.addEventListener('click', () => showTab('stats'));
+  dom.tabSettings.addEventListener('click', () => showTab('settings'));
+  dom.optimizeBtn.addEventListener('click', runOptimizer);
 
   dom.skip.addEventListener('click', nextQuestion);
   dom.messageRetry.addEventListener('click', nextQuestion);
@@ -444,8 +531,9 @@ function bind() {
     try {
       await fetch('/api/refresh', { method: 'POST' });
       await loadIndex();
-      if (dom.viewStats.hidden) await nextQuestion();
-      else await loadStats();
+      if (!dom.viewTrain.hidden) await nextQuestion();
+      else if (!dom.viewStats.hidden) await loadStats();
+      else await loadOptimizerStatus();
     } catch (error) {
       fail('Не удалось обновить', error.message);
     } finally {
@@ -467,7 +555,7 @@ function bind() {
 
   document.addEventListener('keydown', (event) => {
     if (event.target.matches('input, select, textarea')) return;
-    if (!dom.viewStats.hidden) return;                     // shortcuts are training-only
+    if (dom.viewTrain.hidden) return;                      // shortcuts are training-only
 
     if (event.key >= '1' && event.key <= '4') {
       event.preventDefault();
@@ -494,4 +582,7 @@ function bind() {
     return;
   }
   await nextQuestion();
+
+  const initial = location.hash.slice(1);   // deep-link: /#stats or /#settings
+  if (initial === 'stats' || initial === 'settings') showTab(initial);
 })();

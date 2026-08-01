@@ -13,13 +13,14 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from gitbook import MarkdownSource, Question, SourceError, get_settings
+from gitbook.optimizer import NotEnoughReviews, OptimizerService, OptimizerUnavailable
 from gitbook.render import render_answer, render_inline
-from gitbook.store import build_scheduler, make_store
+from gitbook.store import open_store
 
 settings = get_settings()
 source = MarkdownSource(settings)
-_live_scheduler, _preview_scheduler = build_scheduler(settings)
-store = make_store(settings, _live_scheduler, _preview_scheduler)
+store = open_store(settings)
+optimizer = OptimizerService(store, settings)
 
 app = FastAPI(title="GitBook question trainer")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -228,6 +229,25 @@ def get_stats():
     for row in rows:
         row["orphaned"] = row["question_id"] not in live_ids
     return {"rows": rows, "now": now.timestamp()}
+
+
+@app.get("/api/optimizer/status")
+def optimizer_status():
+    """Review count vs. thresholds and the current weight source (for the Settings tab)."""
+    return optimizer.status()
+
+
+@app.post("/api/optimizer/run")
+def optimizer_run():
+    """Train FSRS weights on the review log, persist them, and apply live."""
+    try:
+        return optimizer.run()
+    except OptimizerUnavailable as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+    except NotEnoughReviews as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except Exception as error:  # torch/optimizer failure — surface it, don't 500 silently
+        raise HTTPException(status_code=500, detail=f"Optimisation failed: {error}") from error
 
 
 @app.post("/api/refresh")

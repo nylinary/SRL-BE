@@ -1,0 +1,26 @@
+[project]
+name = "question-trainer"
+version = "0.1.0"
+description = "Flashcard-style GitBook question trainer with FSRS spaced repetition."
+readme = "README.md"
+
+# Locked to 3.11–3.12: the optimizer (Settings-tab "Optimize" button) needs torch,
+# which has no wheels for 3.13 yet. Everything else runs on 3.13 too, but pinning
+# below it keeps the full feature set working.
+requires-python = ">=3.11,<3.13"
+
+dependencies = [
+    "fastapi>=0.119",
+    "uvicorn>=0.38",
+    "jinja2>=3.1",
+    "requests>=2.32",
+    "mistune>=3.1",
+    "psycopg[binary]>=3,<4",
+    "sqlmodel>=0.0.21",
+    "fsrs>=6,<7",
+]
+
+[project.optional-dependencies]
+# FSRS weight training for the Settings tab. Pulls in torch/numpy/pandas/tqdm.
+#   pip install ".[optimizer]"
+optimizer = ["fsrs[optimizer]>=6,<7"]

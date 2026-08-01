@@ -5,3 +5,8 @@ requests>=2.32
 mistune>=3.1
 fsrs>=6,<7
 psycopg[binary]>=3,<4
+sqlmodel>=0.0.21
+# Optional — enables the Settings-tab "Optimize" button (trains FSRS weights).
+# Needs a torch build for your Python (torch has no wheels for 3.13 yet; use 3.11/3.12).
+# Install with:  pip install "fsrs[optimizer]"
+

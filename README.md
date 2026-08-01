@@ -48,12 +48,29 @@ it never counts as a repetition, so the schedule reflects real recall attempts. 
 never-graded cards, then cards not yet due.
 
 FSRS owns all scheduling — stability, difficulty, due date, and the retrievability
-("удержание") shown in stats. Tune it with `FSRS_RETENTION` (default 0.9). Once you have
-review history you can train optimised weights and paste them into `FSRS_PARAMETERS`.
+("удержание") shown in stats. Tune the target with `FSRS_RETENTION` (default 0.9).
 
 The **Статистика** tab lists every graded card — question, average rating, last rating,
 repetition count, current retention %, next-review date — sortable by any column and
 filterable by theme, text, and "только к повторению".
+
+### Optimising the weights
+
+The 21 FSRS weights default to a population-average model. The **Настройки** tab shows how
+many of your reviews *count toward training* (FSRS only learns from reviews spread across
+different days) versus the 512 it needs, and once you're there an **Оптимизировать веса**
+button trains weights on *your* review history, stores them in `fsrs_params`, and applies
+them live — no restart. Below the threshold the run is refused rather than silently
+persisting default weights over your current ones.
+
+Training runs py-fsrs's `Optimizer`, which needs the extra:
+
+```bash
+pip install "fsrs[optimizer]"   # torch/numpy/pandas; use Python 3.11/3.12 — no torch wheels for 3.13
+```
+
+Without it the tab still shows progress; the button explains what to install. The trained
+weights live in the database, so they survive restarts and server moves.
 
 ### Storage
 
@@ -64,19 +81,24 @@ refuses to start without it):
 DATABASE_URL=postgresql://user:pass@host:5432/questions
 ```
 
-The schema is created automatically on first run — two tables:
+Persistence is **SQLModel** (SQLAlchemy 2.0) — models and engine in `gitbook/models.py`.
+The schema is created automatically on first run — three tables:
 
-- **`progress`** — one row per card. `card_json` holds the serialised `fsrs.Card`
+- **`progress`** — one row per card. `card_json` (JSONB) holds the serialised `fsrs.Card`
   (the per-card FSRS state: `stability`, `difficulty`, `state`, `step`, `due`,
   `last_review`); `due`/`state` are denormalised for the picker, and `reps` /
   `rating_sum` / `last_rating` back the stats aggregates.
-- **`reviews`** — the raw append-only log (`question_id`, `rating`, `reviewed_at`),
-  the data an optimiser would train new weights on.
+- **`reviews`** — the raw append-only log (`question_id`, `rating`, `reviewed_at`) the
+  optimiser trains on.
+- **`fsrs_params`** — trained weight sets. The newest row is loaded at startup, so
+  optimised weights survive restarts.
 
-The 21 FSRS **weights** are *not* in the database — they're the in-memory model built
-in `build_scheduler` from `FSRS_PARAMETERS` (or the library default), the same for
-every card. Cards are keyed by a content hash, so editing a question's wording in
-GitBook starts a fresh card (the old one lingers in stats, flagged `удалён из источника`).
+The live 21 FSRS **weights** are the in-memory `Scheduler` (built in `build_scheduler`):
+newest `fsrs_params` row → else `FSRS_PARAMETERS` env → else the library default. Reads
+use pooled sessions; each write takes a per-card Postgres advisory lock so the
+read-modify-write around FSRS is atomic. Cards are keyed by a content hash, so editing a
+question's wording in GitBook starts a fresh card (the old one lingers in stats, flagged
+`удалён из источника`).
 
 ## How it works
 
@@ -85,9 +107,11 @@ gitbook/config.py   settings from env / .env (incl. FSRS knobs)
 gitbook/source.py   GitLab fetch, TTL cache, on-disk fallback copy
 gitbook/parser.py   markdown -> [Question(theme, subtheme, question, body)]
 gitbook/render.py   GitBook-flavoured markdown -> HTML
-gitbook/store.py    FSRS Card persistence (PostgreSQL) + review history
+gitbook/models.py   SQLModel tables (progress, reviews, fsrs_params) + engine
+gitbook/store.py    FSRS Card persistence + review history + weight load/save/hot-swap
+gitbook/optimizer.py FSRS weight training (Optimizer) — status + run
 main.py             FastAPI routes
-static/, templates/ single-page UI (Тренировка / Статистика tabs)
+static/, templates/ single-page UI (Тренировка / Статистика / Настройки tabs)
 ```
 
 The last successful download is mirrored to `.cache/questions.md`, so an expired token or
@@ -107,6 +131,8 @@ syntax is expanded rather than leaked as literal text: `{% hint %}` → callouts
 | `POST /api/questions/random` | `{theme, subtheme, answered_only, mode, seen[]}` → next card (due-first in `spaced` mode) with its `progress` and per-rating `preview` intervals |
 | `POST /api/reviews` | `{question_id, rating}` (1–4) → record a graded review, advance the FSRS schedule |
 | `GET /api/stats` | every graded card with avg/last rating, count, retrievability, next-review date |
+| `GET /api/optimizer/status` | review count vs. thresholds + current weight source |
+| `POST /api/optimizer/run` | train weights on the review log, persist to `fsrs_params`, apply live (501 if the extra isn't installed, 400 if too few reviews) |
 | `POST /api/refresh` | force a re-download |
 | `GET /asset?path=…` | authenticated image proxy |
 

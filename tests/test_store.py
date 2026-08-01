@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import psycopg  # noqa: E402
 from fsrs import Scheduler  # noqa: E402
 
+from gitbook.models import make_engine  # noqa: E402
 from gitbook.store import ReviewStore  # noqa: E402
 
 URL = os.environ.get(
@@ -53,6 +54,7 @@ if not ensure_database():
 with psycopg.connect(URL, autocommit=True) as conn:
     conn.execute("DROP TABLE IF EXISTS progress")
     conn.execute("DROP TABLE IF EXISTS reviews")
+    conn.execute("DROP TABLE IF EXISTS fsrs_params")
 
 SCHED = Scheduler(enable_fuzzing=False)
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -70,7 +72,7 @@ def check(label: str, condition: bool, detail: str = "") -> None:
 
 
 def new_store() -> ReviewStore:
-    return ReviewStore(URL, SCHED, SCHED)
+    return ReviewStore(make_engine(URL), SCHED, SCHED)
 
 
 def grade(store: ReviewStore, qid: str, rating: int, when: datetime, **meta) -> dict:
@@ -135,6 +137,50 @@ check("stats list exactly the graded cards", ids == recorded, f"{ids} vs {record
 
 sched_map = store.schedules()
 check("schedules expose due epochs", "qX" in sched_map and sched_map["qX"]["due"] > 0)
+
+print("weights & optimizer inputs")
+from gitbook.store import build_scheduler, load_saved_weights  # noqa: E402
+
+valid_weights = list(Scheduler().parameters)
+store.save_weights(valid_weights, 0.9, store.review_count())
+check("weights persist and load back",
+      load_saved_weights(store.engine)[:3] == valid_weights[:3])
+
+logs = store.review_logs()
+check("a ReviewLog is built for every review", len(logs) == store.review_count(), str(len(logs)))
+check("review_logs carry rating + datetime",
+      hasattr(logs[0], "rating") and hasattr(logs[0], "review_datetime"))
+
+fake_settings = type(
+    "S", (),
+    {"fsrs_retention": 0.9, "fsrs_max_interval": 36500,
+     "fsrs_enable_fuzz": False, "fsrs_parameters": None},
+)()
+live, preview = build_scheduler(fake_settings, valid_weights)
+store.set_schedulers(live, preview)
+check("hot-swap updates the live scheduler in place",
+      list(store.scheduler.parameters[:3]) == valid_weights[:3])
+
+print("optimizer service")
+from gitbook.optimizer import (  # noqa: E402
+    OptimizerService, OptimizerUnavailable, optimizer_available,
+)
+
+service = OptimizerService(store, fake_settings)
+st = service.status()
+check("status reports the review count", st["review_count"] == store.review_count())
+check("status exposes the effective-review gate",
+      st["required"] == 512 and st["effective_reviews"] >= 0 and "ready" in st)
+check("too few effective reviews are not ready", st["ready"] is False, str(st["effective_reviews"]))
+check("status marks source 'trained' after saving weights", st["current"]["source"] == "trained")
+check("optimizer_available flag matches the real Optimizer",
+      st["optimizer_available"] == optimizer_available())
+if not optimizer_available():
+    try:
+        service.run()
+        check("run() without the extra raises", False)
+    except OptimizerUnavailable:
+        check("run() without the extra raises OptimizerUnavailable", True)
 
 print("validation & persistence")
 for bad in (0, 5, 6):

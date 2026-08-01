@@ -23,6 +23,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab is-active" id="tab-train" role="tab">Тренировка</button>
       <button class="tab" id="tab-stats" role="tab">Статистика</button>
+      <button class="tab" id="tab-settings" role="tab">Настройки</button>
     </nav>
 
     <div class="topbar__filters" id="train-filters">
@@ -153,6 +154,45 @@
         </table>
         <p class="stats-empty" id="stats-empty" hidden>Пока нет оценённых вопросов — поставьте оценку в тренировке.</p>
       </div>
+    </main>
+  </div>
+
+  <!-- ========================================================= SETTINGS -->
+  <div id="view-settings" hidden>
+    <main class="stage">
+      <section class="settings-card">
+        <h2 class="settings-card__title">Интервальное повторение</h2>
+        <dl class="settings-grid">
+          <dt>Алгоритм</dt>
+          <dd>FSRS <span class="settings-note">(Free Spaced Repetition Scheduler)</span></dd>
+          <dt>Целевое удержание</dt>
+          <dd id="set-retention">—</dd>
+          <dt>Текущие веса</dt>
+          <dd id="set-source">—</dd>
+        </dl>
+      </section>
+
+      <section class="settings-card">
+        <h2 class="settings-card__title">Оптимизация весов</h2>
+        <p class="settings-card__desc">
+          FSRS подбирает 21 параметр модели по вашей истории повторений, подстраивая
+          расписание под вашу память. Чем больше повторов вы сделали, тем надёжнее результат.
+        </p>
+
+        <div class="optim">
+          <div class="optim__bar"><div class="optim__fill" id="optim-fill"></div></div>
+          <div class="optim__meta">
+            <span class="optim__count" id="optim-count">—</span>
+            <span class="optim__hint" id="optim-hint"></span>
+          </div>
+        </div>
+
+        <div class="optim__actions">
+          <button class="btn btn--primary" id="optimize-btn" disabled>Оптимизировать веса</button>
+          <span class="optim__status" id="optim-status"></span>
+        </div>
+        <p class="optim__warn" id="optim-warn" hidden></p>
+      </section>
     </main>
   </div>
 </body>
