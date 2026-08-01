@@ -25,6 +25,24 @@ def load_dotenv(path: Path) -> None:
         os.environ.setdefault(key.strip(), value)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_parameters(raw: str) -> tuple[float, ...] | None:
+    """Parse an optional comma-separated list of FSRS weights; None keeps defaults."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        return tuple(float(part) for part in raw.split(",") if part.strip())
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True)
 class Settings:
     gitlab_url: str
@@ -35,6 +53,11 @@ class Settings:
     cache_ttl: int
     cache_dir: Path
     request_timeout: float
+    database_url: str | None
+    fsrs_retention: float
+    fsrs_max_interval: int
+    fsrs_enable_fuzz: bool
+    fsrs_parameters: tuple[float, ...] | None
 
     @property
     def has_token(self) -> bool:
@@ -48,6 +71,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv(BASE_DIR / ".env")
+        cache_dir = Path(os.environ.get("CACHE_DIR", str(BASE_DIR / ".cache")))
         return cls(
             gitlab_url=os.environ.get("GITLAB_URL", "https://gitlab.com").rstrip("/"),
             project=os.environ.get("GITLAB_PROJECT", "nylinary/gitbook-backup"),
@@ -55,8 +79,13 @@ class Settings:
             file_path=os.environ.get("GITBOOK_FILE", "it-database/questions.md"),
             token=os.environ.get("GITLAB_TOKEN", "").strip(),
             cache_ttl=int(os.environ.get("CACHE_TTL", "300")),
-            cache_dir=Path(os.environ.get("CACHE_DIR", str(BASE_DIR / ".cache"))),
+            cache_dir=cache_dir,
             request_timeout=float(os.environ.get("REQUEST_TIMEOUT", "15")),
+            database_url=(os.environ.get("DATABASE_URL", "").strip() or None),
+            fsrs_retention=float(os.environ.get("FSRS_RETENTION", "0.9")),
+            fsrs_max_interval=int(os.environ.get("FSRS_MAX_INTERVAL", "36500")),
+            fsrs_enable_fuzz=_env_bool("FSRS_ENABLE_FUZZ", True),
+            fsrs_parameters=_parse_parameters(os.environ.get("FSRS_PARAMETERS", "")),
         )
 
 

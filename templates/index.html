@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Question Trainer</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🎓</text></svg>">
-  <link rel="stylesheet"
+  <link rel="stylesheet" id="hljs-theme"
     href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
   <link rel="stylesheet" href="/static/styles.css">
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
@@ -20,7 +20,12 @@
       <span>Question&nbsp;Trainer</span>
     </div>
 
-    <div class="topbar__filters">
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" id="tab-train" role="tab">Тренировка</button>
+      <button class="tab" id="tab-stats" role="tab">Статистика</button>
+    </nav>
+
+    <div class="topbar__filters" id="train-filters">
       <label class="field">
         <span class="field__label">Тема</span>
         <select id="theme-select">
@@ -40,6 +45,12 @@
         <span class="switch__track"><span class="switch__thumb"></span></span>
         <span class="switch__label">Только с ответом</span>
       </label>
+
+      <label class="switch" title="Сначала просроченные по FSRS, затем новые">
+        <input type="checkbox" id="spaced-mode" checked>
+        <span class="switch__track"><span class="switch__thumb"></span></span>
+        <span class="switch__label">FSRS-порядок</span>
+      </label>
     </div>
 
     <div class="topbar__actions">
@@ -48,48 +59,102 @@
     </div>
   </header>
 
-  <main class="stage">
-    <section class="card" id="card" hidden>
-      <nav class="crumbs" id="crumbs" aria-label="Раздел"></nav>
-      <h1 class="question" id="question"></h1>
+  <!-- ============================================================ TRAIN -->
+  <div id="view-train">
+    <main class="stage">
+      <section class="card" id="card" hidden>
+        <nav class="crumbs" id="crumbs" aria-label="Раздел"></nav>
+        <h1 class="question" id="question"></h1>
 
-      <details class="answer" id="answer">
-        <summary class="answer__toggle">
-          <span class="answer__chevron" aria-hidden="true"></span>
-          <span class="answer__toggle-text">Показать ответ</span>
-          <kbd class="answer__kbd">Space</kbd>
-        </summary>
-        <div class="answer__body prose" id="answer-body"></div>
-      </details>
+        <details class="answer" id="answer">
+          <summary class="answer__toggle">
+            <span class="answer__chevron" aria-hidden="true"></span>
+            <span class="answer__toggle-text">Показать ответ</span>
+            <kbd class="answer__kbd">Space</kbd>
+          </summary>
+          <div class="answer__body prose" id="answer-body"></div>
+        </details>
 
-      <p class="no-answer" id="no-answer" hidden>Ответ ещё не записан.</p>
-    </section>
+        <p class="no-answer" id="no-answer" hidden>Ответ ещё не записан.</p>
 
-    <section class="card card--skeleton" id="skeleton">
-      <div class="skeleton skeleton--crumbs"></div>
-      <div class="skeleton skeleton--title"></div>
-      <div class="skeleton skeleton--toggle"></div>
-    </section>
+        <div class="grade" id="grade">
+          <span class="grade__label">Как вспомнил?</span>
+          <div class="grade__buttons" id="grade-buttons">
+            <button class="grade__btn grade__btn--1" data-rating="1">
+              <b>Не помню</b><kbd>1</kbd><span class="grade__eta" data-eta="again">—</span>
+            </button>
+            <button class="grade__btn grade__btn--2" data-rating="2">
+              <b>Тяжело</b><kbd>2</kbd><span class="grade__eta" data-eta="hard">—</span>
+            </button>
+            <button class="grade__btn grade__btn--3" data-rating="3">
+              <b>Вспомнил</b><kbd>3</kbd><span class="grade__eta" data-eta="good">—</span>
+            </button>
+            <button class="grade__btn grade__btn--4" data-rating="4">
+              <b>Легко</b><kbd>4</kbd><span class="grade__eta" data-eta="easy">—</span>
+            </button>
+          </div>
+          <p class="grade__hint" id="grade-meta"></p>
+        </div>
+      </section>
 
-    <section class="card card--message" id="message" hidden>
-      <h2 class="message__title" id="message-title"></h2>
-      <p class="message__text" id="message-text"></p>
-      <button class="btn btn--ghost" id="message-retry">Повторить</button>
-    </section>
-  </main>
+      <section class="card card--skeleton" id="skeleton">
+        <div class="skeleton skeleton--crumbs"></div>
+        <div class="skeleton skeleton--title"></div>
+        <div class="skeleton skeleton--toggle"></div>
+      </section>
 
-  <footer class="dock">
-    <button class="btn btn--primary" id="next-btn">
-      Следующий вопрос
-      <kbd>N</kbd>
-    </button>
-    <div class="dock__meta">
-      <span id="progress">—</span>
-      <span class="dock__sep">·</span>
-      <span id="stale-badge" class="badge badge--warn" hidden>офлайн-копия</span>
-      <button class="link-btn" id="reset-seen">сбросить прогресс</button>
-    </div>
-  </footer>
+      <section class="card card--message" id="message" hidden>
+        <h2 class="message__title" id="message-title"></h2>
+        <p class="message__text" id="message-text"></p>
+        <button class="btn btn--ghost" id="message-retry">Повторить</button>
+      </section>
+    </main>
+
+    <footer class="dock">
+      <button class="btn btn--ghost" id="skip-btn" title="Пропустить без оценки — не записывается">
+        Пропустить <kbd>N</kbd>
+      </button>
+      <div class="dock__meta">
+        <span id="progress">—</span>
+        <span class="dock__sep">·</span>
+        <span id="due-badge" class="badge badge--due" hidden></span>
+        <span id="stale-badge" class="badge badge--warn" hidden>офлайн-копия</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- ============================================================ STATS -->
+  <div id="view-stats" hidden>
+    <main class="stage stage--wide">
+      <div class="stats-toolbar">
+        <input type="search" id="stats-search" class="stats-search" placeholder="Поиск по вопросу…">
+        <select id="stats-theme"><option value="">Все темы</option></select>
+        <label class="switch switch--sm" title="Только просроченные к повторению">
+          <input type="checkbox" id="stats-due-only">
+          <span class="switch__track"><span class="switch__thumb"></span></span>
+          <span class="switch__label">Только к повторению</span>
+        </label>
+        <span class="stats-count" id="stats-count"></span>
+      </div>
+
+      <div class="stats-wrap">
+        <table class="stats-table" id="stats-table">
+          <thead>
+            <tr>
+              <th class="sortable" data-key="question_text">Вопрос</th>
+              <th class="sortable is-num" data-key="avg_score" title="Средняя оценка: 1 Не помню … 4 Легко">Ср.&nbsp;оценка</th>
+              <th class="sortable is-num" data-key="last_score">Посл.</th>
+              <th class="sortable is-num" data-key="count">Повторов</th>
+              <th class="sortable is-num" data-key="retrievability" title="Вероятность вспомнить сейчас (FSRS)">Удержание</th>
+              <th class="sortable is-num" data-key="next_due">След. повтор</th>
+            </tr>
+          </thead>
+          <tbody id="stats-body"></tbody>
+        </table>
+        <p class="stats-empty" id="stats-empty" hidden>Пока нет оценённых вопросов — поставьте оценку в тренировке.</p>
+      </div>
+    </main>
+  </div>
 </body>
 
 </html>
