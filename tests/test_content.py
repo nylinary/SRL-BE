@@ -10,7 +10,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from content import doc_to_text, markdown_to_doc, render_doc, text_to_doc  # noqa: E402
+from content import (  # noqa: E402
+    doc_to_text, html_to_doc, markdown_to_doc, render_doc, text_to_doc,
+)
+from gitbook.render import render_answer, render_inline  # noqa: E402
 
 failures: list[str] = []
 
@@ -71,6 +74,20 @@ check("bold imported", "<strong>bold</strong>" in back)
 check("code fence keeps language", 'class="language-python"' in back)
 check("list imported", "<li><p>a</p></li>" in back and "<li><p>b</p></li>" in back)
 check("ampersand escaped once", "&amp;" in back and "&amp;amp;" not in back, back)
+
+print("html_to_doc (GitBook import path: render -> HTML -> ProseMirror)")
+q_out = render_doc(html_to_doc(render_inline(
+    'Что такое <mark style="color:yellow;"><strong><code>MRO</code></strong></mark>?')))
+check("no raw/escaped tags leak from the question", "<mark" not in q_out and "&lt;" not in q_out, q_out)
+check("mark unwrapped, bold+code kept", "<strong>" in q_out and "<code>" in q_out and "MRO" in q_out, q_out)
+
+a_out = render_doc(html_to_doc(render_answer(
+    "## Заголовок\n\nТекст **жир** и `код`.\n\n```python\nprint(1)\n```\n\n- a\n- b\n")))
+check("no leaked HTML / directives in the answer", "&lt;" not in a_out and "{%" not in a_out, a_out[:120])
+check("heading imported", "<h2>Заголовок</h2>" in a_out)
+check("code block keeps language", 'class="language-python"' in a_out and "print(1)" in a_out)
+check("marks imported", "<strong>жир</strong>" in a_out and "<code>код</code>" in a_out)
+check("list imported", "<li><p>a</p></li>" in a_out and "<li><p>b</p></li>" in a_out)
 
 print()
 if failures:

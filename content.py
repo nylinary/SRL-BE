@@ -202,6 +202,143 @@ def markdown_to_doc(markdown: str) -> dict:
     return {"type": "doc", "content": content or []}
 
 
+# --------------------------------------------------- HTML -> ProseMirror
+
+_HEADING_TAGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+_INLINE_MARK_TAGS = {
+    "strong": "bold", "b": "bold", "em": "italic", "i": "italic",
+    "code": "code", "s": "strike", "del": "strike", "strike": "strike",
+}
+# Tags that introduce a block; anything else in a block position is a transparent
+# container (div/figure/details/section/…) whose children are lifted up.
+_BLOCK_TAGS = {"p", "ul", "ol", "li", "pre", "blockquote", "hr", "summary", *_HEADING_TAGS}
+_CONTAINER_TAGS = {"div", "figure", "figcaption", "details", "section", "article", "table",
+                   "thead", "tbody", "tr", "td", "th"}
+
+
+def _html_inline(node, marks: list) -> list:
+    """Inline nodes (text / hardBreak / image) with the accumulated marks."""
+    from bs4 import NavigableString
+
+    if isinstance(node, NavigableString):
+        text = str(node)
+        if not text:
+            return []
+        out = {"type": "text", "text": text}
+        if marks:
+            out["marks"] = list(marks)
+        return [out]
+
+    name = (node.name or "").lower()
+    if name == "br":
+        return [{"type": "hardBreak"}]
+    if name == "img":
+        return [{"type": "image", "attrs": {
+            "src": node.get("src", ""), "alt": node.get("alt") or ""}}]
+
+    marks = list(marks)
+    if name in _INLINE_MARK_TAGS:
+        mark = {"type": _INLINE_MARK_TAGS[name]}
+        if mark not in marks:
+            marks.append(mark)
+    elif name == "a" and node.get("href"):
+        marks.append({"type": "link", "attrs": {"href": node.get("href")}})
+    # mark/span/sup/sub/u/… are transparent — keep marks, recurse.
+
+    result = []
+    for child in node.children:
+        result.extend(_html_inline(child, marks))
+    return result
+
+
+def _html_blocks(parent) -> list:
+    """Block nodes for a parent element; loose inline runs become paragraphs."""
+    from bs4 import NavigableString
+
+    blocks: list = []
+    inline: list = []
+
+    def flush() -> None:
+        nonlocal inline
+        trimmed = [n for n in inline if not (n.get("type") == "text" and not n["text"].strip())] or inline
+        if any(n.get("type") != "text" or n["text"].strip() for n in inline):
+            blocks.append({"type": "paragraph", "content": trimmed})
+        inline = []
+
+    for child in parent.children:
+        if isinstance(child, NavigableString):
+            if str(child).strip():
+                inline.append({"type": "text", "text": str(child)})
+            elif inline:
+                inline.append({"type": "text", "text": " "})
+            continue
+
+        name = (child.name or "").lower()
+        if name in _BLOCK_TAGS:
+            flush()
+            blocks.append(_html_block_node(child))
+        elif name in _CONTAINER_TAGS:
+            flush()
+            blocks.extend(_html_blocks(child))   # transparent container
+        else:
+            inline.extend(_html_inline(child, []))   # inline element
+
+    flush()
+    return [b for b in blocks if b]
+
+
+def _html_block_node(node) -> dict | None:
+    name = (node.name or "").lower()
+    if name == "p":
+        return {"type": "paragraph", "content": [n for n in _inline_children(node)]}
+    if name in _HEADING_TAGS:
+        return {"type": "heading", "attrs": {"level": _HEADING_TAGS[name]},
+                "content": _inline_children(node)}
+    if name in ("ul", "ol"):
+        items = []
+        for li in node.find_all("li", recursive=False):
+            body = _html_blocks(li) or [{"type": "paragraph"}]
+            items.append({"type": "listItem", "content": body})
+        return {"type": "orderedList" if name == "ol" else "bulletList", "content": items}
+    if name == "pre":
+        code = node.find("code")
+        text = (code or node).get_text()
+        lang = None
+        for cls in (code.get("class") if code and code.get("class") else []):
+            if cls.startswith("language-"):
+                lang = cls[len("language-"):]
+        block = {"type": "codeBlock", "content": [{"type": "text", "text": text}] if text else []}
+        if lang:
+            block["attrs"] = {"language": lang}
+        return block
+    if name == "blockquote":
+        return {"type": "blockquote", "content": _html_blocks(node) or [{"type": "paragraph"}]}
+    if name == "hr":
+        return {"type": "horizontalRule"}
+    if name == "summary":  # nested <details> heading — keep as bold paragraph
+        content = _inline_children(node)
+        for n in content:
+            if n.get("type") == "text":
+                n.setdefault("marks", []).append({"type": "bold"})
+        return {"type": "paragraph", "content": content}
+    return None
+
+
+def _inline_children(node) -> list:
+    out = []
+    for child in node.children:
+        out.extend(_html_inline(child, []))
+    return out
+
+
+def html_to_doc(html: str) -> dict:
+    """HTML → ProseMirror JSON. Pair with the GitBook renderer for a faithful import."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    return {"type": "doc", "content": _html_blocks(soup)}
+
+
 # --------------------------------------------------------------- persistence
 
 class CardRepository:
@@ -283,6 +420,14 @@ class CardRepository:
             session.delete(card)
             session.commit()
             return True
+
+    def delete_all(self) -> int:
+        with Session(self.engine) as session:
+            rows = session.exec(select(Card)).all()
+            for card in rows:
+                session.delete(card)
+            session.commit()
+            return len(rows)
 
     def count(self) -> int:
         return len(self.all())

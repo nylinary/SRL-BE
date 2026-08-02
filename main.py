@@ -16,9 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from content import CardRepository, doc_to_text, markdown_to_doc, render_doc
+from content import CardRepository, doc_to_text, html_to_doc, render_doc
 from gitbook import MarkdownSource, SourceError, get_settings
 from gitbook.models import Card
+from gitbook.render import render_answer, render_inline
 from gitbook.optimizer import NotEnoughReviews, OptimizerService, OptimizerUnavailable
 from gitbook.store import open_store
 
@@ -314,13 +315,22 @@ def optimizer_run():
 
 
 @app.post("/api/import/gitbook")
-def import_gitbook():
-    """One-time import: turn the GitBook export into editable cards. Idempotent by text."""
+def import_gitbook(replace: bool = False):
+    """Import the GitBook export into editable cards.
+
+    Goes through the GitBook renderer so inline markup (marks, `code`, code blocks,
+    lists) becomes real ProseMirror formatting instead of literal HTML. Idempotent by
+    text; ``?replace=true`` wipes existing cards first for a clean re-import.
+    """
     try:
         questions = source.load(force=True)
     except SourceError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
+    if replace:
+        cards.delete_all()
+
+    src = settings.source_dir
     existing = {(c.theme, doc_to_text(c.question)) for c in cards.all()}
     created = 0
     for question in questions:
@@ -328,8 +338,8 @@ def import_gitbook():
         if key in existing:
             continue
         cards.create({
-            "question": markdown_to_doc(question.question),
-            "answer": markdown_to_doc(question.body),
+            "question": html_to_doc(render_inline(question.question, src)),
+            "answer": html_to_doc(render_answer(question.body, src)),
             "theme": question.theme,
             "subtheme": question.subtheme,
             "tags": [question.section] if question.section else [],

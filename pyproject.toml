@@ -15,6 +15,7 @@ dependencies = [
     "jinja2>=3.1",
     "requests>=2.32",
     "mistune>=3.1",
+    "beautifulsoup4>=4.12",
     "psycopg[binary]>=3,<4",
     "sqlmodel>=0.0.21",
     "fsrs>=6,<7",
