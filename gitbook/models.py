@@ -1,19 +1,41 @@
 """SQLModel tables and the engine factory (PostgreSQL).
 
-Three tables:
+Tables:
 
-- ``progress`` — one row per card. ``card_json`` holds the serialised ``fsrs.Card``
-  (the per-card FSRS state); ``due``/``state`` are denormalised for the picker;
-  ``reps``/``rating_sum``/``last_rating`` back the stats aggregates.
-- ``reviews`` — the raw append-only log, one row per grade.
-- ``fsrs_params`` — trained FSRS weight sets. The newest row is loaded at startup,
-  so optimised weights survive restarts and server moves.
+- ``cards`` — the content you author. ``question``/``answer`` are ProseMirror
+  documents (JSONB) — the portable rich-text format the TipTap editor produces and
+  every future client (web, extension, React Native) can render.
+- ``progress`` — FSRS scheduling state, one row per card (keyed by ``cards.id``).
+  ``card_json`` holds the serialised ``fsrs.Card``; ``due``/``state`` are denormalised
+  for the picker; ``reps``/``rating_sum``/``last_rating`` back the stats aggregates.
+- ``reviews`` — the raw append-only grade log.
+- ``fsrs_params`` — trained FSRS weight sets; the newest is loaded at startup.
 """
 
 from __future__ import annotations
 
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Column, Field, SQLModel
+
+
+def _empty_doc() -> dict:
+    """An empty ProseMirror document."""
+    return {"type": "doc", "content": []}
+
+
+class Card(SQLModel, table=True):
+    __tablename__ = "cards"
+
+    id: str = Field(primary_key=True)
+    # ProseMirror/TipTap documents — the reusable rich-text content model.
+    question: dict = Field(default_factory=_empty_doc, sa_column=Column(JSONB, nullable=False))
+    answer: dict = Field(default_factory=_empty_doc, sa_column=Column(JSONB, nullable=False))
+    theme: str = Field(default="", index=True)
+    subtheme: str = ""
+    tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
+    position: float = Field(default=0.0, index=True)  # manual ordering
+    created_at: float = 0.0
+    updated_at: float = Field(default=0.0, index=True)
 
 
 class Progress(SQLModel, table=True):

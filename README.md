@@ -1,24 +1,34 @@
 # Question Trainer
 
-Flashcard-style drilling over a GitBook export (`questions.md`) kept in a GitLab repo,
-scheduled with **[FSRS](https://github.com/open-spaced-repetition/py-fsrs)**. Shows one
-question at a time with the answer collapsed, so you recall first and check afterwards;
-grading each recall feeds FSRS, which decides when you see the card again.
+Flashcard-style drilling over **your own cards**, scheduled with
+**[FSRS](https://github.com/open-spaced-repetition/py-fsrs)**. You author question/answer
+cards in a rich-text editor; the trainer shows one at a time with the answer collapsed,
+and grading each recall feeds FSRS, which decides when you see the card again.
 
-## Document contract
+Two front-ends over one FastAPI + PostgreSQL backend:
 
-The parser mirrors how the GitBook page is authored:
+- **Study app** (`/`) — the existing vanilla-JS trainer: Тренировка / Статистика / Настройки.
+- **Card manager** (`frontend/`, React + Vite + TipTap, served at `/manage`) — browse,
+  create, and edit cards.
 
-| Markdown | Meaning |
-| --- | --- |
-| `# Заголовок` / `## Заголовок` | **Theme** — the outermost heading that actually varies (a single wrapping title is skipped) |
-| next heading level | **Subtheme** — PostgreSQL, Apache Kafka, … |
-| following level | optional extra **section** |
-| `<details><summary>…</summary>` | **Question** |
-| body of the `<details>` | **Answer** (any markdown/HTML, nested `<details>` included) |
+## Cards & content
 
-Questions without a body are kept and marked "ответ ещё не записан" — the *Только с
-ответом* switch decides whether they show up.
+A card is a `question` and an `answer`, each a **ProseMirror/TipTap JSON document** —
+the one portable rich-text format shared across every client (web now; a browser
+extension and React Native iOS/Android later). Supported: headings, bold, italic, inline
+code, bullet/ordered lists, blockquote, links, and code blocks with per-block language +
+syntax highlighting — the base set GitBook offered.
+
+[`content.py`](content.py) is the server-side reference: `render_doc` (JSON→HTML for the
+study view and list previews), `doc_to_text` (search / "has answer?"), and
+`markdown_to_doc` (the GitBook importer). Cards have stable ids, so editing a card's
+wording no longer orphans its FSRS history.
+
+### GitBook is now import-only
+
+The old GitBook/GitLab source survives as a one-time importer: `POST /api/import/gitbook`
+fetches the export, converts each `<details>` block to a card (Markdown → ProseMirror),
+and skips anything already imported.
 
 ## Setup
 
@@ -100,53 +110,49 @@ The schema is created automatically on first run — three tables:
 - **`fsrs_params`** — trained weight sets. The newest row is loaded at startup, so
   optimised weights survive restarts.
 
+Plus **`cards`** — your authored content (`question`/`answer` ProseMirror docs, theme,
+subtheme, tags). FSRS `progress`/`reviews` are keyed by `cards.id`.
+
 The live 21 FSRS **weights** are the in-memory `Scheduler` (built in `build_scheduler`):
 newest `fsrs_params` row → else `FSRS_PARAMETERS` env → else the library default. Reads
 use pooled sessions; each write takes a per-card Postgres advisory lock so the
-read-modify-write around FSRS is atomic. Cards are keyed by a content hash, so editing a
-question's wording in GitBook starts a fresh card (the old one lingers in stats, flagged
-`удалён из источника`).
+read-modify-write around FSRS is atomic.
 
 ## How it works
 
 ```
-gitbook/config.py   settings from env / .env (incl. FSRS knobs)
-gitbook/source.py   GitLab fetch, TTL cache, on-disk fallback copy
-gitbook/parser.py   markdown -> [Question(theme, subtheme, question, body)]
-gitbook/render.py   GitBook-flavoured markdown -> HTML
-gitbook/models.py   SQLModel tables (progress, reviews, fsrs_params) + engine
-gitbook/store.py    FSRS Card persistence + review history + weight load/save/hot-swap
+content.py          card content core — ProseMirror render/text + CardRepository
+gitbook/models.py   SQLModel tables (cards, progress, reviews, fsrs_params) + engine
+gitbook/store.py    FSRS card persistence + review history + weight load/save/hot-swap
 gitbook/optimizer.py FSRS weight training (Optimizer) — status + run
-main.py             FastAPI routes
-static/, templates/ single-page UI (Тренировка / Статистика / Настройки tabs)
+gitbook/parser.py,source.py,render.py   GitBook — now used only by the importer
+main.py             FastAPI routes (study + card CRUD + import)
+static/, templates/ study UI (Тренировка / Статистика / Настройки)
+frontend/           React + Vite + TipTap card manager (served at /manage)
 ```
-
-The last successful download is mirrored to `.cache/questions.md`, so an expired token or
-a GitLab outage degrades to an "офлайн-копия" badge instead of a blank page. GitBook
-syntax is expanded rather than leaked as literal text: `{% hint %}` → callouts,
-`{% code title %}` → captioned code blocks, `{% tabs %}` / `{% stepper %}` / `{% columns %}`,
-`<mark style="color:$primary">` → themed highlights, `:circle-N:` → ①②③. Repository images
-(`../.gitbook/assets/…`) are served through the authenticated `/asset` proxy.
 
 ## API
 
 | Route | Purpose |
 | --- | --- |
-| `GET /` | the app |
+| `GET /` | study app · `/manage` card manager (when built) |
+| `GET /api/cards` | list card summaries (`?search=&theme=&subtheme=`) |
+| `POST /api/cards` | create a card `{question, answer, theme, subtheme, tags}` |
+| `GET /api/cards/{id}` | full card (ProseMirror docs, for the editor) |
+| `PUT /api/cards/{id}` · `DELETE /api/cards/{id}` | update / delete |
 | `GET /api/config` | rating legend + FSRS retention target |
-| `GET /api/index` | theme/subtheme tree with counts + source status |
-| `POST /api/questions/random` | `{theme, subtheme, answered_only, mode, seen[]}` → next card (due-first in `spaced` mode) with its `progress` and per-rating `preview` intervals |
-| `POST /api/reviews` | `{question_id, rating}` (1–4) → record a graded review, advance the FSRS schedule |
+| `GET /api/index` | theme/subtheme tree with counts |
+| `POST /api/questions/random` | `{theme, subtheme, answered_only, mode, exclude[]}` → next card (due-first in `spaced` mode) with `progress` and per-rating `preview` intervals |
+| `POST /api/reviews` | `{question_id, rating}` (1–4) → record a graded review |
 | `GET /api/stats` | every graded card with avg/last rating, count, retrievability, next-review date |
-| `GET /api/optimizer/status` | review count vs. thresholds + current weight source |
-| `POST /api/optimizer/run` | train weights on the review log, persist to `fsrs_params`, apply live (501 if the extra isn't installed, 400 if too few reviews) |
-| `POST /api/refresh` | force a re-download |
-| `GET /asset?path=…` | authenticated image proxy |
+| `GET /api/optimizer/status` · `POST /api/optimizer/run` | weight training status / run |
+| `POST /api/import/gitbook` | one-time import of the GitBook export into cards |
 
 ## Tests
 
 ```bash
-uv run python tests/test_parser.py   # parsing & GitBook rendering
+uv run python tests/test_content.py  # ProseMirror render/text + Markdown import
+uv run python tests/test_parser.py   # GitBook parsing (used by the importer)
 uv run python tests/test_store.py    # FSRS scheduling & persistence (PostgreSQL)
 ```
 

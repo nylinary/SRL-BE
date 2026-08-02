@@ -1,10 +1,16 @@
-"""FastAPI app serving FSRS-scheduled questions from a GitBook markdown export."""
+"""FastAPI app: FSRS-scheduled study over your own cards (authored in the editor).
+
+Cards live in Postgres as ProseMirror documents (see ``content.py``). GitBook is no
+longer the source — it survives only as a one-time importer (``POST /api/import/gitbook``).
+"""
 
 from __future__ import annotations
 
 import random
+import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -12,19 +18,26 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from gitbook import MarkdownSource, Question, SourceError, get_settings
+from content import CardRepository, doc_to_text, markdown_to_doc, render_doc
+from gitbook import MarkdownSource, SourceError, get_settings
+from gitbook.models import Card
 from gitbook.optimizer import NotEnoughReviews, OptimizerService, OptimizerUnavailable
-from gitbook.render import render_answer, render_inline
 from gitbook.store import open_store
 
 settings = get_settings()
-source = MarkdownSource(settings)
+source = MarkdownSource(settings)            # used only by the GitBook importer now
 store = open_store(settings)
+cards = CardRepository(store.engine)
 optimizer = OptimizerService(store, settings)
 
-app = FastAPI(title="GitBook question trainer")
+app = FastAPI(title="Question trainer")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+# Serve the built React card-manager SPA if it has been built (dev uses Vite directly).
+_spa = Path("frontend/dist")
+if (_spa / "index.html").exists():
+    app.mount("/manage", StaticFiles(directory=str(_spa), html=True), name="manage")
 
 UNCATEGORISED = "Без раздела"
 RATINGS = [
@@ -33,14 +46,15 @@ RATINGS = [
     {"value": 3, "key": "good", "label": "Вспомнил"},
     {"value": 4, "key": "easy", "label": "Легко"},
 ]
+_LONE_P = re.compile(r"^<p>(.*)</p>$", re.DOTALL)
 
 
 class RandomRequest(BaseModel):
     theme: str | None = None
     subtheme: str | None = None
     answered_only: bool = True
-    mode: str = "spaced"  # "spaced" (due first) or "random"
-    exclude: list[str] = Field(default_factory=list)  # the card on screen — no repeat in a row
+    mode: str = "spaced"
+    exclude: list[str] = Field(default_factory=list)
 
 
 class ReviewRequest(BaseModel):
@@ -48,88 +62,117 @@ class ReviewRequest(BaseModel):
     rating: int = Field(ge=1, le=4)
 
 
+class CardIn(BaseModel):
+    question: dict = Field(default_factory=lambda: {"type": "doc", "content": []})
+    answer: dict = Field(default_factory=lambda: {"type": "doc", "content": []})
+    theme: str = ""
+    subtheme: str = ""
+    tags: list[str] = Field(default_factory=list)
+    position: float | None = None
+
+
+# ---------------------------------------------------------------- card helpers
+
 def _label(value: str) -> str:
     return value or UNCATEGORISED
 
 
-def _matches(question: Question, req: RandomRequest) -> bool:
-    if req.answered_only and not question.has_answer:
+def _inline(html: str) -> str:
+    """Strip a lone wrapping <p> so a one-line question sits inside the <h1>."""
+    match = _LONE_P.match(html.strip())
+    return match.group(1) if match else html
+
+
+def _has_answer(card: Card) -> bool:
+    return bool(doc_to_text(card.answer).strip())
+
+
+def _matches(card: Card, req: RandomRequest) -> bool:
+    if req.answered_only and not _has_answer(card):
         return False
-    if req.theme and _label(question.theme) != req.theme:
+    if req.theme and _label(card.theme) != req.theme:
         return False
-    if req.subtheme and _label(question.subtheme) != req.subtheme:
+    if req.subtheme and _label(card.subtheme) != req.subtheme:
         return False
     return True
 
 
-def _meta(question: Question) -> dict[str, str]:
+def _meta(card: Card) -> dict[str, str]:
     return {
-        "theme": _label(question.theme),
-        "subtheme": _label(question.subtheme) if question.subtheme else "",
-        "section": question.section,
-        "question_text": question.question_text,
+        "theme": _label(card.theme),
+        "subtheme": card.subtheme or "",
+        "section": "",
+        "question_text": doc_to_text(card.question),
     }
 
 
-def _serialise(question: Question, now: datetime) -> dict[str, object]:
-    # Single locked read so `progress` and `preview` describe the same card state.
-    snapshot = store.snapshot(question.id, now)
+def _serialise(card: Card, now: datetime) -> dict[str, object]:
+    snapshot = store.snapshot(card.id, now)  # progress + preview from one consistent read
     return {
-        "id": question.id,
-        **_meta(question),
-        "question_html": render_inline(question.question, settings.source_dir),
-        "answer_html": (
-            render_answer(question.body, settings.source_dir) if question.has_answer else ""
-        ),
-        "has_answer": question.has_answer,
+        "id": card.id,
+        **_meta(card),
+        "question_html": _inline(render_doc(card.question)),
+        "answer_html": render_doc(card.answer) if _has_answer(card) else "",
+        "has_answer": _has_answer(card),
         "progress": snapshot["progress"],
         "preview": snapshot["preview"],
     }
 
 
-def _load() -> list[Question]:
-    try:
-        return source.load()
-    except SourceError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+def _card_summary(card: Card) -> dict:
+    return {
+        "id": card.id,
+        "theme": card.theme,
+        "subtheme": card.subtheme,
+        "tags": card.tags,
+        "question_html": _inline(render_doc(card.question)),
+        "question_text": doc_to_text(card.question),
+        "has_answer": _has_answer(card),
+        "created_at": card.created_at,
+        "updated_at": card.updated_at,
+    }
 
 
-def _pick(
-    pool: list[Question],
-    schedules: dict[str, dict],
-    exclude: set[str],
-    mode: str,
-    now: float,
-) -> Question:
-    """Pick the next question — FSRS order drives it, no session state.
+def _card_full(card: Card) -> dict:
+    return {
+        "id": card.id,
+        "question": card.question,
+        "answer": card.answer,
+        "theme": card.theme,
+        "subtheme": card.subtheme,
+        "tags": card.tags,
+        "position": card.position,
+        "created_at": card.created_at,
+        "updated_at": card.updated_at,
+    }
 
-    In spaced mode the order is: overdue cards (most overdue first), then
-    never-graded cards, then cards scheduled but not yet due. ``exclude`` holds the
-    card currently on screen so it isn't served twice in a row (e.g. on Skip); the
-    schedule itself decides everything else.
-    """
+
+def _pick(pool, schedules, exclude, mode, now):
+    """FSRS order drives it; `exclude` (card on screen) prevents a repeat in a row."""
     if mode == "random":
-        candidates = [q for q in pool if q.id not in exclude]
+        candidates = [c for c in pool if c.id not in exclude]
         return random.choice(candidates or pool)
 
-    def ordered(candidates: list[Question]) -> list[Question]:
+    def ordered(candidates):
         due, new, upcoming = [], [], []
-        for question in candidates:
-            schedule = schedules.get(question.id)
+        for card in candidates:
+            schedule = schedules.get(card.id)
             if schedule is None:
-                new.append(question)
+                new.append(card)
             elif schedule["due"] <= now:
-                due.append(question)
+                due.append(card)
             else:
-                upcoming.append(question)
-        due.sort(key=lambda q: schedules[q.id]["due"])       # most overdue first
-        random.shuffle(new)                                  # variety among new cards
-        upcoming.sort(key=lambda q: schedules[q.id]["due"])  # soonest first
+                upcoming.append(card)
+        due.sort(key=lambda c: schedules[c.id]["due"])
+        random.shuffle(new)
+        upcoming.sort(key=lambda c: schedules[c.id]["due"])
         return due + new + upcoming
 
     queue = ordered(pool)
-    return next((q for q in queue if q.id not in exclude), queue[0])
+    return next((c for c in queue if c.id not in exclude), queue[0])
 
+
+# --------------------------------------------------------------------- routes
 
 @app.get("/")
 def index(request: Request):
@@ -138,69 +181,55 @@ def index(request: Request):
 
 @app.get("/api/config")
 def get_config():
-    return {
-        "ratings": RATINGS,
-        "retention": settings.fsrs_retention,
-        "algorithm": "FSRS",
-    }
+    return {"ratings": RATINGS, "retention": settings.fsrs_retention, "algorithm": "FSRS"}
 
 
 @app.get("/api/index")
 def get_index():
-    """Theme/subtheme tree with counts, used to populate the filters."""
-    questions = _load()
+    """Theme/subtheme tree with counts, for the training filters."""
+    pool = cards.all()
     themes: dict[str, dict] = {}
-
-    for question in questions:
+    for card in pool:
+        answered = _has_answer(card)
         theme = themes.setdefault(
-            _label(question.theme),
-            {"name": _label(question.theme), "total": 0, "answered": 0, "subthemes": {}},
+            _label(card.theme),
+            {"name": _label(card.theme), "total": 0, "answered": 0, "subthemes": {}},
         )
         theme["total"] += 1
-        theme["answered"] += int(question.has_answer)
-
-        if question.subtheme:
+        theme["answered"] += int(answered)
+        if card.subtheme:
             subtheme = theme["subthemes"].setdefault(
-                question.subtheme,
-                {"name": question.subtheme, "total": 0, "answered": 0},
+                card.subtheme, {"name": card.subtheme, "total": 0, "answered": 0}
             )
             subtheme["total"] += 1
-            subtheme["answered"] += int(question.has_answer)
+            subtheme["answered"] += int(answered)
 
     return {
-        "total": len(questions),
-        "answered": sum(q.has_answer for q in questions),
+        "total": len(pool),
+        "answered": sum(_has_answer(c) for c in pool),
         "themes": [
             {**theme, "subthemes": list(theme["subthemes"].values())}
             for theme in themes.values()
         ],
-        "status": source.status,
+        "status": {"source": "cards", "stale": False},
     }
 
 
 @app.post("/api/questions/random")
 def random_question(req: RandomRequest):
-    questions = _load()
-    pool = [q for q in questions if _matches(q, req)]
-
+    pool = [c for c in cards.all() if _matches(c, req)]
     if not pool:
-        return JSONResponse(
-            status_code=404,
-            content={"detail": "No questions match the current filters."},
-        )
+        return JSONResponse(status_code=404, content={"detail": "No cards match the filters."})
 
     now_epoch = time.time()
     now_dt = datetime.now(timezone.utc)
     schedules = store.schedules()
-    question = _pick(pool, schedules, set(req.exclude), req.mode, now_epoch)
+    card = _pick(pool, schedules, set(req.exclude), req.mode, now_epoch)
 
-    due_count = sum(
-        1 for q in pool if q.id in schedules and schedules[q.id]["due"] <= now_epoch
-    )
-    new_count = sum(1 for q in pool if q.id not in schedules)
-
+    due_count = sum(1 for c in pool if c.id in schedules and schedules[c.id]["due"] <= now_epoch)
+    new_count = sum(1 for c in pool if c.id not in schedules)
     return {
-        "question": _serialise(question, now_dt),
+        "question": _serialise(card, now_dt),
         "pool_size": len(pool),
         "due_count": due_count,
         "new_count": new_count,
@@ -209,18 +238,15 @@ def random_question(req: RandomRequest):
 
 @app.post("/api/reviews")
 def record_review(req: ReviewRequest):
-    """Record a graded review (1–4) and advance the card's FSRS schedule."""
-    questions = {q.id: q for q in _load()}
-    question = questions.get(req.question_id)
-    meta = _meta(question) if question else None
+    card = cards.get(req.question_id)
+    meta = _meta(card) if card else None
     progress = store.record(req.question_id, req.rating, meta=meta)
     return {"progress": progress}
 
 
 @app.get("/api/stats")
 def get_stats():
-    """Every graded card, joined with the live catalogue for orphan detection."""
-    live_ids = {q.id for q in _load()}
+    live_ids = {c.id for c in cards.all()}
     now = datetime.now(timezone.utc)
     rows = store.stats(now)
     for row in rows:
@@ -228,32 +254,97 @@ def get_stats():
     return {"rows": rows, "now": now.timestamp()}
 
 
+# --------------------------------------------------------------- card CRUD
+
+@app.get("/api/cards")
+def list_cards(
+    theme: str | None = None,
+    subtheme: str | None = None,
+    search: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    rows = cards.list(theme=theme, subtheme=subtheme, search=search, limit=limit, offset=offset)
+    return {"cards": [_card_summary(c) for c in rows], "total": cards.count()}
+
+
+@app.post("/api/cards", status_code=201)
+def create_card(body: CardIn):
+    return _card_full(cards.create(body.model_dump()))
+
+
+@app.get("/api/cards/{card_id}")
+def get_card(card_id: str):
+    card = cards.get(card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    return _card_full(card)
+
+
+@app.put("/api/cards/{card_id}")
+def update_card(card_id: str, body: CardIn):
+    card = cards.update(card_id, body.model_dump(exclude_unset=True))
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    return _card_full(card)
+
+
+@app.delete("/api/cards/{card_id}", status_code=204)
+def delete_card(card_id: str):
+    if not cards.delete(card_id):
+        raise HTTPException(status_code=404, detail="Card not found")
+    return Response(status_code=204)
+
+
+# ------------------------------------------------------------ optimizer + import
+
 @app.get("/api/optimizer/status")
 def optimizer_status():
-    """Review count vs. thresholds and the current weight source (for the Settings tab)."""
     return optimizer.status()
 
 
 @app.post("/api/optimizer/run")
 def optimizer_run():
-    """Train FSRS weights on the review log, persist them, and apply live."""
     try:
         return optimizer.run()
     except OptimizerUnavailable as error:
         raise HTTPException(status_code=501, detail=str(error)) from error
     except NotEnoughReviews as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    except Exception as error:  # torch/optimizer failure — surface it, don't 500 silently
+    except Exception as error:
         raise HTTPException(status_code=500, detail=f"Optimisation failed: {error}") from error
 
 
-@app.post("/api/refresh")
-def refresh():
+@app.post("/api/import/gitbook")
+def import_gitbook():
+    """One-time import: turn the GitBook export into editable cards. Idempotent by text."""
     try:
         questions = source.load(force=True)
     except SourceError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
-    return {"total": len(questions), "status": source.status}
+
+    existing = {(c.theme, doc_to_text(c.question)) for c in cards.all()}
+    created = 0
+    for question in questions:
+        key = (question.theme, question.question_text)
+        if key in existing:
+            continue
+        cards.create({
+            "question": markdown_to_doc(question.question),
+            "answer": markdown_to_doc(question.body),
+            "theme": question.theme,
+            "subtheme": question.subtheme,
+            "tags": [question.section] if question.section else [],
+        })
+        existing.add(key)
+        created += 1
+    return {"imported": created, "total_cards": cards.count()}
+
+
+@app.post("/api/refresh")
+def refresh():
+    """Reload the study pool (cards are already live in the DB — this is a no-op count)."""
+    return {"total": cards.count(), "status": {"source": "cards", "stale": False}}
 
 
 @app.get("/asset")
