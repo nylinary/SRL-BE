@@ -280,6 +280,15 @@ def get_card(card_id: str):
     return _card_full(card)
 
 
+@app.get("/api/cards/{card_id}/study")
+def study_card(card_id: str):
+    """The study-screen view of one card — used to refresh in place after an inline edit."""
+    card = cards.get(card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    return _serialise(card, datetime.now(timezone.utc))
+
+
 @app.put("/api/cards/{card_id}")
 def update_card(card_id: str, body: CardIn):
     card = cards.update(card_id, body.model_dump(exclude_unset=True))
