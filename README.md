@@ -1,15 +1,9 @@
-# Question Trainer
+# SRL-BE — API
 
-Flashcard-style drilling over **your own cards**, scheduled with
-**[FSRS](https://github.com/open-spaced-repetition/py-fsrs)**. You author question/answer
-cards in a rich-text editor; the trainer shows one at a time with the answer collapsed,
-and grading each recall feeds FSRS, which decides when you see the card again.
-
-Two front-ends over one FastAPI + PostgreSQL backend:
-
-- **Study app** (`/`) — the existing vanilla-JS trainer: Тренировка / Статистика / Настройки.
-- **Card manager** (`frontend/`, React + Vite + TipTap, served at `/manage`) — browse,
-  create, and edit cards.
+The **API only** (FastAPI + PostgreSQL + FSRS). It serves JSON at `/api/*` (CORS-enabled)
+over your own cards; the whole UI lives in the separate **SRL-FE** (React) repo. You author
+question/answer cards there, and grading each recall feeds FSRS, which schedules the next
+review.
 
 ## Cards & content
 

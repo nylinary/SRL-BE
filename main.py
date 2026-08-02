@@ -10,12 +10,10 @@ import random
 import re
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from content import CardRepository, doc_to_text, markdown_to_doc, render_doc
@@ -30,14 +28,14 @@ store = open_store(settings)
 cards = CardRepository(store.engine)
 optimizer = OptimizerService(store, settings)
 
-app = FastAPI(title="Question trainer")
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-# Serve the built React card-manager SPA if it has been built (dev uses Vite directly).
-_spa = Path("frontend/dist")
-if (_spa / "index.html").exists():
-    app.mount("/manage", StaticFiles(directory=str(_spa), html=True), name="manage")
+# API-only: the React frontend (SRL-FE) is deployed separately and calls this over HTTP.
+app = FastAPI(title="SRL API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 UNCATEGORISED = "Без раздела"
 RATINGS = [
@@ -175,8 +173,8 @@ def _pick(pool, schedules, exclude, mode, now):
 # --------------------------------------------------------------------- routes
 
 @app.get("/")
-def index(request: Request):
-    return templates.TemplateResponse(request, "index.html")
+def root():
+    return {"service": "SRL API", "docs": "/docs"}
 
 
 @app.get("/api/config")

@@ -58,6 +58,7 @@ class Settings:
     fsrs_max_interval: int
     fsrs_enable_fuzz: bool
     fsrs_parameters: tuple[float, ...] | None
+    cors_origins: list[str]
 
     @property
     def has_token(self) -> bool:
@@ -86,6 +87,7 @@ class Settings:
             fsrs_max_interval=int(os.environ.get("FSRS_MAX_INTERVAL", "36500")),
             fsrs_enable_fuzz=_env_bool("FSRS_ENABLE_FUZZ", True),
             fsrs_parameters=_parse_parameters(os.environ.get("FSRS_PARAMETERS", "")),
+            cors_origins=[o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()],
         )
 
 
