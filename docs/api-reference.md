@@ -52,7 +52,8 @@ Logout is client-side (drop the token). There is no server session to revoke.
 | Method | Path | Auth | Notes |
 |--------|------|:---:|-------|
 | POST | `/api/admin/claim-orphans` | 👑 | Assign unowned rows to the caller → `{claimed:{…}, user_id}` |
-| POST | `/api/admin/restore-orphaned` | 👑 | Rebuild cards for the caller's dangling study history (cards removed from source), reusing the old id so history reconnects; additive, skips existing → `{restored, skipped_duplicates}` |
+| POST | `/api/admin/restore-orphaned` | 👑 | Rebuild cards from the caller's dangling study history (text only, no answers), reusing the old id so history reconnects; additive, skips existing → `{restored, skipped_duplicates}` |
+| POST | `/api/admin/import-gitbook` | 👑 | Re-import the GitBook source into the caller's account, **add-only** (full question + answer). Skips questions already present (by rendered text); reuses a dangling-history id to reconnect where a match exists → `{imported, reconnected, total_cards}` |
 | GET | `/asset?path=…` | 🔓 | Image proxy for already-imported cards (public: `<img>` can't send Bearer) |
 | GET | `/` | 🔓 | `{service, docs}` |
 

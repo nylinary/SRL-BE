@@ -155,6 +155,23 @@ class ReviewStore:
             "preview": self._preview_from(user_id, p.card_json if p else None, now),
         }
 
+    def dangling_history(self, user_id: str, live_ids: set[str]) -> dict[str, str]:
+        """``{normalized question_text: question_id}`` for this user's progress rows whose
+        card no longer exists — so a re-import can reuse the id and reconnect the history."""
+        with Session(self.engine) as session:
+            rows = session.exec(
+                select(Progress.question_id, Progress.question_text)
+                .where(Progress.user_id == user_id)
+            ).all()
+        out: dict[str, str] = {}
+        for question_id, text in rows:
+            if question_id in live_ids:
+                continue
+            key = (text or "").strip().lower()
+            if key:
+                out.setdefault(key, question_id)
+        return out
+
     def review_count(self, user_id: str) -> int:
         with Session(self.engine) as session:
             return session.exec(

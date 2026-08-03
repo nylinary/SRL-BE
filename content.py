@@ -386,7 +386,7 @@ class CardRepository:
         now = time.time()
         position = data.get("position")
         card = Card(
-            id=uuid.uuid4().hex,
+            id=data.get("id") or uuid.uuid4().hex,   # explicit id reconnects old history
             user_id=user_id,
             question=data.get("question") or {"type": "doc", "content": []},
             answer=data.get("answer") or {"type": "doc", "content": []},

@@ -26,7 +26,9 @@ schedule, review history, and trained FSRS weights.
   sent as `Authorization: Bearer` on every call.
 - **Isolation:** `user_id` on cards/progress/reviews/fsrs_params; all queries scoped.
 - **Limits:** 1000 new cards / 24h / user. Admin-only endpoints gated by `ADMIN_EMAILS`.
-- **GitBook:** the importer is gone; `/asset` remains to serve already-imported images.
+- **GitBook:** the public importer is gone; an **admin-only, add-only** re-import remains
+  (`POST /api/admin/import-gitbook`) to restore missing questions, and `/asset` still serves
+  already-imported images.
 
 > **Keep this current:** update the relevant page in `docs/` in the *same commit* as any
 > change to endpoints, the data model, auth, env vars, or deploy steps.

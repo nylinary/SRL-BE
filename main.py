@@ -24,10 +24,11 @@ from auth.deps import bind_users, get_current_user, require_admin
 from auth.oauth import OAuthError
 from auth.tokens import AuthError, issue_session, issue_state, read_state
 from auth.users import BadCredentials, EmailTaken, UserRepository
-from content import CardRepository, doc_to_text, render_doc
+from content import CardRepository, doc_to_text, html_to_doc, render_doc
 from gitbook import MarkdownSource, SourceError, get_settings
 from gitbook.models import Card, User
 from gitbook.optimizer import NotEnoughReviews, OptimizerService, OptimizerUnavailable
+from gitbook.render import render_answer, render_inline
 from gitbook.store import open_store
 
 settings = get_settings()
@@ -450,6 +451,47 @@ def optimizer_run(user: User = Depends(get_current_user)):
 def claim_orphans(user: User = Depends(require_admin)):
     """One-shot: assign all pre-multi-user rows (no owner) to the calling admin."""
     return {"claimed": users.claim_orphans(user.id), "user_id": user.id}
+
+
+@app.post("/api/admin/import-gitbook")
+def import_gitbook(user: User = Depends(require_admin)):
+    """Re-import the GitBook source into the calling admin's account, ADD-ONLY.
+
+    Adds questions that aren't already in the account (matched by rendered question text)
+    and never modifies an existing card. When a new question matches this user's dangling
+    review history (a card that was removed), it reuses that old id so the history
+    reconnects. Restores full question + answer from the source.
+    """
+    try:
+        questions = source.load(force=True)
+    except SourceError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+    src = settings.source_dir
+    live = cards.all(user.id)
+    existing_texts = {doc_to_text(c.question).strip().lower() for c in live}
+    orphan_by_text = store.dangling_history(user.id, {c.id for c in live})
+
+    imported = reconnected = 0
+    for question in questions:
+        q_doc = html_to_doc(render_inline(question.question, src))
+        key = doc_to_text(q_doc).strip().lower()
+        if not key or key in existing_texts:
+            continue
+        old_id = orphan_by_text.get(key)
+        cards.create(user.id, {
+            "id": old_id,   # reconnect old history if this question had some, else new id
+            "question": q_doc,
+            "answer": html_to_doc(render_answer(question.body, src)),
+            "theme": question.theme,
+            "subtheme": question.subtheme,
+            "tags": [question.section] if question.section else [],
+        })
+        existing_texts.add(key)
+        imported += 1
+        if old_id:
+            reconnected += 1
+    return {"imported": imported, "reconnected": reconnected, "total_cards": cards.count(user.id)}
 
 
 @app.post("/api/admin/restore-orphaned")
