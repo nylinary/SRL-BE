@@ -469,29 +469,44 @@ def import_gitbook(user: User = Depends(require_admin)):
 
     src = settings.source_dir
     live = cards.all(user.id)
-    existing_texts = {doc_to_text(c.question).strip().lower() for c in live}
+    existing_by_text = {doc_to_text(c.question).strip().lower(): c for c in live}
     orphan_by_text = store.dangling_history(user.id, {c.id for c in live})
 
-    imported = reconnected = 0
+    imported = reconnected = filled = 0
     for question in questions:
         q_doc = html_to_doc(render_inline(question.question, src))
         key = doc_to_text(q_doc).strip().lower()
-        if not key or key in existing_texts:
+        if not key:
             continue
+        a_doc = html_to_doc(render_answer(question.body, src))
         old_id = orphan_by_text.get(key)
-        cards.create(user.id, {
-            "id": old_id,   # reconnect old history if this question had some, else new id
+        existing = existing_by_text.get(key)
+
+        if existing is not None:
+            # Already have this question: never overwrite, but fill an EMPTY answer from
+            # the source and reconnect any dangling history to this card.
+            if not _has_answer(existing) and doc_to_text(a_doc).strip():
+                cards.update(user.id, existing.id, {"answer": a_doc})
+                filled += 1
+            if old_id and store.reconnect_history(old_id, existing.id):
+                reconnected += 1
+            continue
+
+        # Missing question: add it, reusing dangling history's id to reconnect if present.
+        created = cards.create(user.id, {
+            "id": old_id,
             "question": q_doc,
-            "answer": html_to_doc(render_answer(question.body, src)),
+            "answer": a_doc,
             "theme": question.theme,
             "subtheme": question.subtheme,
             "tags": [question.section] if question.section else [],
         })
-        existing_texts.add(key)
+        existing_by_text[key] = created
         imported += 1
         if old_id:
             reconnected += 1
-    return {"imported": imported, "reconnected": reconnected, "total_cards": cards.count(user.id)}
+    return {"imported": imported, "filled_answers": filled,
+            "reconnected": reconnected, "total_cards": cards.count(user.id)}
 
 
 @app.post("/api/admin/restore-orphaned")

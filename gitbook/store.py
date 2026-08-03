@@ -172,6 +172,43 @@ class ReviewStore:
                 out.setdefault(key, question_id)
         return out
 
+    def reconnect_history(self, old_id: str, new_id: str) -> bool:
+        """Move a dangling progress row (and its reviews) from ``old_id`` to ``new_id`` so
+        old study history reattaches to an existing card. Merges aggregates if the target
+        already has history, keeping the more recent FSRS state. No-op if nothing to move.
+        """
+        if old_id == new_id:
+            return False
+        with Session(self.engine) as session:
+            old = session.get(Progress, old_id)
+            if old is None:
+                return False
+            target = session.get(Progress, new_id)
+            if target is None:
+                session.add(Progress(
+                    question_id=new_id, user_id=old.user_id, card_json=old.card_json,
+                    due=old.due, state=old.state, reps=old.reps, rating_sum=old.rating_sum,
+                    last_rating=old.last_rating, last_review=old.last_review,
+                    theme=old.theme, subtheme=old.subtheme, section=old.section,
+                    question_text=old.question_text,
+                ))
+            else:
+                target.reps += old.reps
+                target.rating_sum += old.rating_sum
+                if old.last_review > target.last_review:  # keep the newer schedule state
+                    target.last_review = old.last_review
+                    target.last_rating = old.last_rating
+                    target.card_json = old.card_json
+                    target.due = old.due
+                    target.state = old.state
+                session.add(target)
+            for review in session.exec(select(Review).where(Review.question_id == old_id)).all():
+                review.question_id = new_id
+                session.add(review)
+            session.delete(old)
+            session.commit()
+            return True
+
     def review_count(self, user_id: str) -> int:
         with Session(self.engine) as session:
             return session.exec(
