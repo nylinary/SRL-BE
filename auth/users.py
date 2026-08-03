@@ -19,6 +19,15 @@ from gitbook.config import get_settings
 from gitbook.models import Card, FsrsParams, OAuthAccount, Progress, Review, User
 
 from .oauth import Profile
+from .passwords import hash_password, verify_password
+
+
+class EmailTaken(Exception):
+    """Registration attempted with an email that already has an account."""
+
+
+class BadCredentials(Exception):
+    """Email/password login failed (unknown email, no password set, or wrong password)."""
 
 
 class UserRepository:
@@ -28,6 +37,43 @@ class UserRepository:
     def get(self, user_id: str) -> User | None:
         with Session(self.engine) as session:
             return session.get(User, user_id)
+
+    # --------------------------------------------------------- email / password
+
+    def register_password(self, email: str, password: str, name: str = "") -> User:
+        """Create a new email/password account. Fails if the email is already in use."""
+        settings = get_settings()
+        email = email.strip().lower()
+        with Session(self.engine) as session:
+            existing = session.exec(select(User).where(User.email == email)).first()
+            if existing is not None:
+                # An email may belong to a social account (no password) — we still refuse,
+                # because password registration doesn't prove ownership of the address.
+                raise EmailTaken(email)
+            user = User(
+                id=uuid.uuid4().hex, email=email, name=name or email.split("@")[0],
+                provider="password", password_hash=hash_password(password),
+                is_admin=settings.is_admin_email(email), created_at=time.time(),
+                last_login=time.time(),
+            )
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+            return user
+
+    def authenticate_password(self, email: str, password: str) -> User:
+        email = email.strip().lower()
+        with Session(self.engine) as session:
+            user = session.exec(select(User).where(User.email == email)).first()
+            if user is None or not verify_password(password, user.password_hash):
+                raise BadCredentials()
+            # Keep admin status and last_login fresh on each login.
+            user.is_admin = get_settings().is_admin_email(user.email)
+            user.last_login = time.time()
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+            return user
 
     def upsert_from_profile(self, profile: Profile) -> User:
         settings = get_settings()

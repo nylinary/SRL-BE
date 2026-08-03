@@ -30,7 +30,8 @@ class User(SQLModel, table=True):
     email: str | None = Field(default=None, index=True)  # may be null (e.g. VK w/o email)
     name: str = ""
     avatar_url: str = ""
-    provider: str = ""          # last provider used to sign in
+    provider: str = ""          # last provider used to sign in ('password' for email/pw)
+    password_hash: str | None = None   # set only for email/password accounts
     is_admin: bool = False
     created_at: float = 0.0
     last_login: float = 0.0
@@ -119,6 +120,7 @@ def normalise_dsn(database_url: str) -> str:
 # create_all() only creates missing *tables*; it never ALTERs an existing one, so the
 # user_id columns are added here. All statements are safe to run on every boot.
 _MIGRATIONS = [
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR",
     "ALTER TABLE cards ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",
     "ALTER TABLE progress ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",

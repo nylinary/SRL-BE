@@ -23,7 +23,7 @@ from auth import oauth
 from auth.deps import bind_users, get_current_user, require_admin
 from auth.oauth import OAuthError
 from auth.tokens import AuthError, issue_session, issue_state, read_state
-from auth.users import UserRepository
+from auth.users import BadCredentials, EmailTaken, UserRepository
 from content import CardRepository, doc_to_text, render_doc
 from gitbook import MarkdownSource, SourceError, get_settings
 from gitbook.models import Card, User
@@ -67,6 +67,17 @@ class RandomRequest(BaseModel):
 class ReviewRequest(BaseModel):
     question_id: str
     rating: int = Field(ge=1, le=4)
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: str = ""
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
 
 
 class CardIn(BaseModel):
@@ -197,10 +208,47 @@ def root():
     return {"service": "SRL API", "docs": "/docs"}
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _session_for(user: User) -> str:
+    """Issue a session token and, for admins, adopt any pre-multi-user orphan rows.
+
+    Auto-claim is idempotent: once claimed there are no orphans left, so repeat logins
+    are no-ops. It's how the original single-user data lands in the admin's account.
+    """
+    if user.is_admin:
+        users.claim_orphans(user.id)
+    return issue_session(user_id=user.id, email=user.email, is_admin=user.is_admin)
+
+
 @app.get("/api/auth/providers")
 def auth_providers():
     """Which social logins are configured on this deployment."""
     return {"providers": oauth.available_providers()}
+
+
+@app.post("/api/auth/register", status_code=201)
+def auth_register(body: RegisterRequest):
+    email = body.email.strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address.")
+    if len(body.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    try:
+        user = users.register_password(email, body.password, body.name.strip())
+    except EmailTaken as error:
+        raise HTTPException(status_code=409, detail="This email is already registered.") from error
+    return {"token": _session_for(user), "user": _user_public(user)}
+
+
+@app.post("/api/auth/login")
+def auth_login_password(body: LoginRequest):
+    try:
+        user = users.authenticate_password(body.email, body.password)
+    except BadCredentials as error:
+        raise HTTPException(status_code=401, detail="Wrong email or password.") from error
+    return {"token": _session_for(user), "user": _user_public(user)}
 
 
 @app.get("/api/auth/{provider}/login")
@@ -227,7 +275,7 @@ def auth_callback(provider: str, code: str | None = None, state: str | None = No
             raise AuthError("state/provider mismatch")
         profile = oauth.exchange(provider, code)
         user = users.upsert_from_profile(profile)
-        token = issue_session(user_id=user.id, email=user.email, is_admin=user.is_admin)
+        token = _session_for(user)
     except (AuthError, OAuthError) as err:
         return RedirectResponse(f"{dest}?error={type(err).__name__}")
     return RedirectResponse(f"{dest}?token={token}")
