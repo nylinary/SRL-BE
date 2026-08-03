@@ -452,6 +452,17 @@ def claim_orphans(user: User = Depends(require_admin)):
     return {"claimed": users.claim_orphans(user.id), "user_id": user.id}
 
 
+@app.post("/api/admin/restore-orphaned")
+def restore_orphaned(user: User = Depends(require_admin)):
+    """Rebuild cards for the caller's study history whose card was removed from the source.
+
+    Additive/idempotent — never touches existing cards; reconnects each restored card to
+    its old history by reusing the id. Answers can't be recovered (only the question text
+    survived), so restored cards have an empty answer.
+    """
+    return {**cards.restore_orphaned(user.id), "user_id": user.id}
+
+
 # --------------------------------------------------------------------- assets
 
 @app.get("/asset")

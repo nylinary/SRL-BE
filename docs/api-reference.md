@@ -52,6 +52,7 @@ Logout is client-side (drop the token). There is no server session to revoke.
 | Method | Path | Auth | Notes |
 |--------|------|:---:|-------|
 | POST | `/api/admin/claim-orphans` | 👑 | Assign unowned rows to the caller → `{claimed:{…}, user_id}` |
+| POST | `/api/admin/restore-orphaned` | 👑 | Rebuild cards for the caller's dangling study history (cards removed from source), reusing the old id so history reconnects; additive, skips existing → `{restored, skipped_duplicates}` |
 | GET | `/asset?path=…` | 🔓 | Image proxy for already-imported cards (public: `<img>` can't send Bearer) |
 | GET | `/` | 🔓 | `{service, docs}` |
 

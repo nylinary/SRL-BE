@@ -439,3 +439,47 @@ class CardRepository:
                 select(func.count()).select_from(Card)
                 .where(Card.user_id == user_id, Card.created_at >= since_epoch)
             ).one()
+
+    def restore_orphaned(self, user_id: str) -> dict:
+        """Recreate cards for this user's study history that has no matching card anymore.
+
+        When cards were removed from the source and wiped on a re-import, their FSRS
+        history (``progress`` rows) was left dangling — the stats screen shows those as
+        "removed from source". This rebuilds a card for each, **reusing the progress'
+        ``question_id`` as the new card id** so the history reconnects automatically.
+
+        Additive and safe: never touches an existing card, and skips any history whose
+        question text already exists as a card (so a question that WAS re-imported under a
+        new id isn't duplicated). Answers can't be recovered — only the question text
+        survived in the history — so restored cards start with an empty answer. Idempotent.
+        """
+        from gitbook.models import Progress
+
+        now = time.time()
+        with Session(self.engine) as session:
+            cards = session.exec(select(Card).where(Card.user_id == user_id)).all()
+            live_ids = {c.id for c in cards}
+            seen_text = {doc_to_text(c.question).strip().lower() for c in cards}
+            rows = session.exec(select(Progress).where(Progress.user_id == user_id)).all()
+
+            restored, skipped = 0, 0
+            for p in rows:
+                if p.question_id in live_ids:
+                    continue  # history already has its card
+                text = (p.question_text or "").strip()
+                if not text:
+                    continue
+                if text.lower() in seen_text:
+                    skipped += 1  # this question already exists under another card
+                    continue
+                session.add(Card(
+                    id=p.question_id, user_id=user_id,
+                    question=text_to_doc(text), answer={"type": "doc", "content": []},
+                    theme=p.theme or "", subtheme=p.subtheme or "", tags=[],
+                    position=now, created_at=now, updated_at=now,
+                ))
+                seen_text.add(text.lower())
+                live_ids.add(p.question_id)
+                restored += 1
+            session.commit()
+            return {"restored": restored, "skipped_duplicates": skipped}

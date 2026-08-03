@@ -79,3 +79,13 @@ until claimed:
   user and returns per-table counts.
 - It runs **automatically** whenever an admin logs in (`main._session_for`), and is also
   exposed as `POST /api/admin/claim-orphans` for a manual re-run. Idempotent.
+
+**Dangling history (removed from source).** A `progress` row whose `question_id` no longer
+matches any card shows as "removed from source" in stats. This happens when cards are
+wiped and re-created (e.g. a `?replace=true` re-import) — history keyed by the old ids is
+left behind. `CardRepository.restore_orphaned(user_id)` (endpoint
+`POST /api/admin/restore-orphaned`, and a button on the stats screen) rebuilds a card for
+each such row **reusing the old `question_id`** so the history reconnects. It's additive
+(never edits existing cards) and skips history whose question text already exists as a
+card. Answers can't be recovered — only the question text survived — so restored cards
+start empty.
