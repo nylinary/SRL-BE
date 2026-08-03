@@ -17,6 +17,7 @@ import html as _html
 import time
 import uuid
 
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from gitbook.models import Card
@@ -342,13 +343,14 @@ def html_to_doc(html: str) -> dict:
 # --------------------------------------------------------------- persistence
 
 class CardRepository:
-    """CRUD over the ``cards`` table, sharing the store's engine."""
+    """CRUD over the ``cards`` table, scoped to a single owner (``user_id``)."""
 
     def __init__(self, engine) -> None:
         self.engine = engine
 
     def list(
         self,
+        user_id: str,
         *,
         theme: str | None = None,
         subtheme: str | None = None,
@@ -357,7 +359,7 @@ class CardRepository:
         offset: int = 0,
     ) -> list[Card]:
         with Session(self.engine) as session:
-            statement = select(Card)
+            statement = select(Card).where(Card.user_id == user_id)
             if theme:
                 statement = statement.where(Card.theme == theme)
             if subtheme:
@@ -370,19 +372,22 @@ class CardRepository:
                     or needle in doc_to_text(c.answer).lower()]
         return rows[offset:offset + limit]
 
-    def all(self) -> list[Card]:
+    def all(self, user_id: str) -> list[Card]:
         with Session(self.engine) as session:
-            return session.exec(select(Card)).all()
+            return session.exec(select(Card).where(Card.user_id == user_id)).all()
 
-    def get(self, card_id: str) -> Card | None:
+    def get(self, user_id: str, card_id: str) -> Card | None:
+        """Return the card only if it belongs to this user (else None)."""
         with Session(self.engine) as session:
-            return session.get(Card, card_id)
+            card = session.get(Card, card_id)
+        return card if card is not None and card.user_id == user_id else None
 
-    def create(self, data: dict) -> Card:
+    def create(self, user_id: str, data: dict) -> Card:
         now = time.time()
         position = data.get("position")
         card = Card(
             id=uuid.uuid4().hex,
+            user_id=user_id,
             question=data.get("question") or {"type": "doc", "content": []},
             answer=data.get("answer") or {"type": "doc", "content": []},
             theme=(data.get("theme") or "").strip(),
@@ -398,10 +403,10 @@ class CardRepository:
             session.refresh(card)
             return card
 
-    def update(self, card_id: str, data: dict) -> Card | None:
+    def update(self, user_id: str, card_id: str, data: dict) -> Card | None:
         with Session(self.engine) as session:
             card = session.get(Card, card_id)
-            if card is None:
+            if card is None or card.user_id != user_id:
                 return None
             for field in ("question", "answer", "theme", "subtheme", "tags", "position"):
                 if field in data and data[field] is not None:
@@ -412,22 +417,25 @@ class CardRepository:
             session.refresh(card)
             return card
 
-    def delete(self, card_id: str) -> bool:
+    def delete(self, user_id: str, card_id: str) -> bool:
         with Session(self.engine) as session:
             card = session.get(Card, card_id)
-            if card is None:
+            if card is None or card.user_id != user_id:
                 return False
             session.delete(card)
             session.commit()
             return True
 
-    def delete_all(self) -> int:
+    def count(self, user_id: str) -> int:
         with Session(self.engine) as session:
-            rows = session.exec(select(Card)).all()
-            for card in rows:
-                session.delete(card)
-            session.commit()
-            return len(rows)
+            return session.exec(
+                select(func.count()).select_from(Card).where(Card.user_id == user_id)
+            ).one()
 
-    def count(self) -> int:
-        return len(self.all())
+    def created_since(self, user_id: str, since_epoch: float) -> int:
+        """How many cards this user created since ``since_epoch`` — for the daily limit."""
+        with Session(self.engine) as session:
+            return session.exec(
+                select(func.count()).select_from(Card)
+                .where(Card.user_id == user_id, Card.created_at >= since_epoch)
+            ).one()

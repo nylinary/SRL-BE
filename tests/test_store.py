@@ -1,4 +1,4 @@
-"""Checks for the FSRS store on PostgreSQL: `python tests/test_store.py`.
+"""Checks for the per-user FSRS store on PostgreSQL: `python tests/test_store.py`.
 
 Targets ``TEST_DATABASE_URL`` (default a local ``qt_test`` database). The database
 name must contain "test" — a guard so the destructive table reset can never hit a
@@ -20,7 +20,7 @@ import psycopg  # noqa: E402
 from fsrs import Scheduler  # noqa: E402
 
 from gitbook.models import make_engine  # noqa: E402
-from gitbook.store import ReviewStore  # noqa: E402
+from gitbook.store import ReviewStore, load_saved_weights  # noqa: E402
 
 URL = os.environ.get(
     "TEST_DATABASE_URL", f"postgresql://{getpass.getuser()}@127.0.0.1:5432/qt_test"
@@ -56,8 +56,15 @@ with psycopg.connect(URL, autocommit=True) as conn:
     conn.execute("DROP TABLE IF EXISTS reviews")
     conn.execute("DROP TABLE IF EXISTS fsrs_params")
 
-SCHED = Scheduler(enable_fuzzing=False)
+# Two users prove isolation; everything is scoped to USER unless noted.
+USER = "user-test"
+OTHER = "user-other"
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+SETTINGS = type("S", (), {
+    "fsrs_retention": 0.9, "fsrs_max_interval": 36500,
+    "fsrs_enable_fuzz": False, "fsrs_parameters": None,
+})()
 
 failures: list[str] = []
 recorded: set[str] = set()
@@ -72,23 +79,27 @@ def check(label: str, condition: bool, detail: str = "") -> None:
 
 
 def new_store() -> ReviewStore:
-    return ReviewStore(make_engine(URL), SCHED, SCHED)
+    return ReviewStore(make_engine(URL), SETTINGS)
 
 
 def grade(store: ReviewStore, qid: str, rating: int, when: datetime, **meta) -> dict:
     recorded.add(qid)
-    return store.record(qid, rating, meta=meta or None, now=when)
+    return store.record(USER, qid, rating, meta=meta or None, now=when)
+
+
+def preview_of(store: ReviewStore, qid: str, when: datetime) -> dict:
+    return store.snapshot(USER, qid, when)["preview"]
 
 
 store = new_store()
 
 print(f"target: {DBNAME}")
 print("empty state")
-check("unknown question has no progress", store.get("qX") is None)
-check("schedules start empty", store.schedules() == {})
+check("unknown question has no progress", store.get(USER, "qX") is None)
+check("schedules start empty", store.schedules(USER) == {})
 
 print("preview (per-rating next interval)")
-preview = store.preview("qX", NOW)
+preview = preview_of(store, "qX", NOW)
 check("preview covers all four ratings", set(preview) == {"again", "hard", "good", "easy"})
 check(
     "preview is monotonic (Again ≤ Hard ≤ Good ≤ Easy)",
@@ -99,7 +110,7 @@ check("Easy on a new card schedules days out", preview["easy"] > 86400, str(prev
 
 print("recording a review")
 p1 = grade(store, "qX", 3, NOW, theme="БД", subtheme="PostgreSQL", question_text="Что такое MVCC?")
-check("recording creates progress", store.get("qX", NOW) is not None)
+check("recording creates progress", store.get(USER, "qX", NOW) is not None)
 check("count is 1 after one review", p1["count"] == 1, str(p1["count"]))
 check("avg equals the only rating", p1["avg_score"] == 3, str(p1["avg_score"]))
 check("last_score is the rating", p1["last_score"] == 3, str(p1["last_score"]))
@@ -107,6 +118,15 @@ check("next_due is in the future", p1["next_due"] > NOW.timestamp())
 check("meta stored for the stats table", p1["question_text"] == "Что такое MVCC?")
 check("retrievability is a probability", 0.0 <= p1["retrievability"] <= 1.0, str(p1["retrievability"]))
 check("fresh card is in a learning state", p1["state"] in {"learning", "review"}, p1["state"])
+
+print("per-user isolation")
+check("another user can't see the card", store.get(OTHER, "qX", NOW) is None)
+check("another user's schedules stay empty", store.schedules(OTHER) == {})
+try:
+    store.record(OTHER, "qX", 3, now=NOW)
+    check("cross-user record is blocked", False)
+except PermissionError:
+    check("cross-user record is blocked", True)
 
 print("FSRS dynamics")
 again = grade(store, "dynAgain", 1, NOW)
@@ -132,43 +152,37 @@ check("last_score follows the latest grade", p2["last_score"] == 4, str(p2["last
 check("meta persists without re-sending", p2["theme"] == "БД", p2["theme"])
 
 grade(store, "qY", 2, NOW, question_text="Redis?")
-ids = {row["question_id"] for row in store.stats(NOW)}
+ids = {row["question_id"] for row in store.stats(USER, NOW)}
 check("stats list exactly the graded cards", ids == recorded, f"{ids} vs {recorded}")
 
-sched_map = store.schedules()
+sched_map = store.schedules(USER)
 check("schedules expose due epochs", "qX" in sched_map and sched_map["qX"]["due"] > 0)
 
 print("weights & optimizer inputs")
-from gitbook.store import build_scheduler, load_saved_weights  # noqa: E402
-
 valid_weights = list(Scheduler().parameters)
-store.save_weights(valid_weights, 0.9, store.review_count())
+store.save_weights(USER, valid_weights, 0.9, store.review_count(USER))
 check("weights persist and load back",
-      load_saved_weights(store.engine)[:3] == valid_weights[:3])
+      load_saved_weights(store.engine, USER)[:3] == valid_weights[:3])
+check("weights are per-user", load_saved_weights(store.engine, OTHER) is None)
 
-logs = store.review_logs()
-check("a ReviewLog is built for every review", len(logs) == store.review_count(), str(len(logs)))
+logs = store.review_logs(USER)
+check("a ReviewLog is built for every review", len(logs) == store.review_count(USER), str(len(logs)))
 check("review_logs carry rating + datetime",
       hasattr(logs[0], "rating") and hasattr(logs[0], "review_datetime"))
 
-fake_settings = type(
-    "S", (),
-    {"fsrs_retention": 0.9, "fsrs_max_interval": 36500,
-     "fsrs_enable_fuzz": False, "fsrs_parameters": None},
-)()
-live, preview = build_scheduler(fake_settings, valid_weights)
-store.set_schedulers(live, preview)
-check("hot-swap updates the live scheduler in place",
-      list(store.scheduler.parameters[:3]) == valid_weights[:3])
+# Saving weights invalidates the cached scheduler; the next build uses them.
+live = store._schedulers(USER)[0]
+check("new weights take effect after save (no restart)",
+      list(live.parameters[:3]) == valid_weights[:3], str(live.parameters[:3]))
 
 print("optimizer service")
 from gitbook.optimizer import (  # noqa: E402
     OptimizerService, OptimizerUnavailable, optimizer_available,
 )
 
-service = OptimizerService(store, fake_settings)
-st = service.status()
-check("status reports the review count", st["review_count"] == store.review_count())
+service = OptimizerService(store, SETTINGS)
+st = service.status(USER)
+check("status reports the review count", st["review_count"] == store.review_count(USER))
 check("status exposes the effective-review gate",
       st["required"] == 512 and st["effective_reviews"] >= 0 and "ready" in st)
 check("too few effective reviews are not ready", st["ready"] is False, str(st["effective_reviews"]))
@@ -177,7 +191,7 @@ check("optimizer_available flag matches the real Optimizer",
       st["optimizer_available"] == optimizer_available())
 if not optimizer_available():
     try:
-        service.run()
+        service.run(USER)
         check("run() without the extra raises", False)
     except OptimizerUnavailable:
         check("run() without the extra raises OptimizerUnavailable", True)
@@ -185,15 +199,15 @@ if not optimizer_available():
 print("validation & persistence")
 for bad in (0, 5, 6):
     try:
-        store.record("qBad", bad, now=NOW)
+        store.record(USER, "qBad", bad, now=NOW)
         check(f"rating {bad} rejected", False)
     except ValueError:
         check(f"rating {bad} rejected", True)
 
 store.close()
 reopened = new_store()
-check("data survives a reconnect (persistence)", reopened.get("qX", NOW)["count"] == 2)
-check("FSRS card state survives a reconnect", reopened.preview("qX", NOW)["good"] > 0)
+check("data survives a reconnect (persistence)", reopened.get(USER, "qX", NOW)["count"] == 2)
+check("FSRS card state survives a reconnect", preview_of(reopened, "qX", NOW)["good"] > 0)
 reopened.close()
 
 print()

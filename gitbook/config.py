@@ -44,6 +44,32 @@ def _parse_parameters(raw: str) -> tuple[float, ...] | None:
 
 
 @dataclass(frozen=True)
+class OAuthCreds:
+    client_id: str
+    client_secret: str
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.client_id and self.client_secret)
+
+
+# Providers we know how to talk to; each is enabled only when its env creds are set.
+OAUTH_PROVIDERS = ("google", "github", "yandex", "vk")
+
+
+def _load_oauth() -> dict[str, OAuthCreds]:
+    out: dict[str, OAuthCreds] = {}
+    for name in OAUTH_PROVIDERS:
+        creds = OAuthCreds(
+            client_id=os.environ.get(f"{name.upper()}_CLIENT_ID", "").strip(),
+            client_secret=os.environ.get(f"{name.upper()}_CLIENT_SECRET", "").strip(),
+        )
+        if creds.configured:
+            out[name] = creds
+    return out
+
+
+@dataclass(frozen=True)
 class Settings:
     gitlab_url: str
     project: str
@@ -59,6 +85,14 @@ class Settings:
     fsrs_enable_fuzz: bool
     fsrs_parameters: tuple[float, ...] | None
     cors_origins: list[str]
+    # --- auth / multi-user ---
+    jwt_secret: str
+    jwt_ttl_days: int
+    admin_emails: frozenset[str]
+    public_backend_url: str        # this API's own public origin (for OAuth redirect_uri)
+    frontend_url: str              # where to send the browser back after login
+    oauth: dict[str, "OAuthCreds"]
+    daily_card_limit: int
 
     @property
     def has_token(self) -> bool:
@@ -69,10 +103,16 @@ class Settings:
         """Directory of the markdown file inside the repo — assets resolve against it."""
         return os.path.dirname(self.file_path)
 
+    def is_admin_email(self, email: str | None) -> bool:
+        return bool(email) and email.lower() in self.admin_emails
+
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv(BASE_DIR / ".env")
         cache_dir = Path(os.environ.get("CACHE_DIR", str(BASE_DIR / ".cache")))
+        admin_emails = frozenset(
+            e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
+        )
         return cls(
             gitlab_url=os.environ.get("GITLAB_URL", "https://gitlab.com").rstrip("/"),
             project=os.environ.get("GITLAB_PROJECT", "nylinary/gitbook-backup"),
@@ -88,6 +128,13 @@ class Settings:
             fsrs_enable_fuzz=_env_bool("FSRS_ENABLE_FUZZ", True),
             fsrs_parameters=_parse_parameters(os.environ.get("FSRS_PARAMETERS", "")),
             cors_origins=[o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()],
+            jwt_secret=os.environ.get("JWT_SECRET", "").strip(),
+            jwt_ttl_days=int(os.environ.get("JWT_TTL_DAYS", "30")),
+            admin_emails=admin_emails,
+            public_backend_url=os.environ.get("PUBLIC_BACKEND_URL", "").rstrip("/"),
+            frontend_url=os.environ.get("FRONTEND_URL", "").rstrip("/"),
+            oauth=_load_oauth(),
+            daily_card_limit=int(os.environ.get("DAILY_CARD_LIMIT", "1000")),
         )
 
 

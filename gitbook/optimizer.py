@@ -16,7 +16,7 @@ A successful run reads the review log, fits a new 21-weight set, persists it to
 
 from __future__ import annotations
 
-from .store import ReviewStore, build_scheduler
+from .store import ReviewStore
 
 # py-fsrs's mini_batch_size: below this many effective reviews the Optimizer returns
 # the default weights unchanged. It is the real floor for training to do anything.
@@ -85,8 +85,8 @@ class OptimizerService:
         self.store = store
         self.settings = settings
 
-    def _current_weights_info(self) -> dict:
-        params = self.store.latest_params()
+    def _current_weights_info(self, user_id: str) -> dict:
+        params = self.store.latest_params(user_id)
         if params is not None:
             return {
                 "source": "trained",
@@ -98,9 +98,9 @@ class OptimizerService:
             return {"source": "custom", "trained_at": None}
         return {"source": "default", "trained_at": None}
 
-    def status(self) -> dict:
-        total = self.store.review_count()
-        effective = _effective_reviews(self.store.review_logs())
+    def status(self, user_id: str) -> dict:
+        total = self.store.review_count(user_id)
+        effective = _effective_reviews(self.store.review_logs(user_id))
         return {
             "review_count": total,
             "effective_reviews": effective,
@@ -109,17 +109,17 @@ class OptimizerService:
             "ready": effective >= REQUIRED_EFFECTIVE_REVIEWS,
             "optimizer_available": optimizer_available(),
             "retention": self.settings.fsrs_retention,
-            "current": self._current_weights_info(),
+            "current": self._current_weights_info(user_id),
         }
 
-    def run(self) -> dict:
-        """Optimise weights on the review log, persist, and apply live."""
+    def run(self, user_id: str) -> dict:
+        """Optimise this user's weights on their review log, persist, and apply live."""
         if not optimizer_available():
             raise OptimizerUnavailable(
                 "The optimizer is not installed. Add it with: uv sync --extra optimizer"
             )
 
-        logs = self.store.review_logs()
+        logs = self.store.review_logs(user_id)
         effective = _effective_reviews(logs)
         if effective < REQUIRED_EFFECTIVE_REVIEWS:
             raise NotEnoughReviews(
@@ -140,11 +140,13 @@ class OptimizerService:
                 "Training produced no change — not enough spread-out reviews yet."
             )
 
-        self.store.save_weights(weights, self.settings.fsrs_retention, self.store.review_count())
-        live, preview = build_scheduler(self.settings, weights)
-        self.store.set_schedulers(live, preview)   # applied with no restart
+        # save_weights persists and invalidates the user's cached schedulers, so the
+        # new weights take effect on the next request with no restart.
+        self.store.save_weights(
+            user_id, weights, self.settings.fsrs_retention, self.store.review_count(user_id)
+        )
 
-        result = self.status()
+        result = self.status(user_id)
         result["trained"] = True
         result["weights"] = [round(float(w), 4) for w in weights]
         return result

@@ -70,38 +70,44 @@ def _to_dict(p: Progress, scheduler: Scheduler | None, now: datetime) -> dict:
 
 
 class ReviewStore:
-    """FSRS card store with review history and trainable weights, on PostgreSQL."""
+    """Per-user FSRS card store with review history and trainable weights, on PostgreSQL.
 
-    def __init__(
-        self,
-        engine,
-        scheduler: Scheduler,
-        preview_scheduler: Scheduler | None = None,
-    ) -> None:
+    Every method is scoped to a ``user_id`` — users never see each other's schedule,
+    history, or weights. Each user's schedulers (built from their own trained weights)
+    are cached in memory and rebuilt lazily after they optimise.
+    """
+
+    def __init__(self, engine, settings) -> None:
         self.engine = engine
-        # Guards the in-memory scheduler swap so a hot reload can't tear a request.
-        self._sched_lock = threading.Lock()
-        self.scheduler = scheduler
-        self.preview_scheduler = preview_scheduler or scheduler
+        self.settings = settings
+        self._lock = threading.Lock()
+        self._cache: dict[str, tuple[Scheduler, Scheduler]] = {}
 
     # ------------------------------------------------------- scheduler access
 
-    def _schedulers(self) -> tuple[Scheduler, Scheduler]:
-        with self._sched_lock:
-            return self.scheduler, self.preview_scheduler
+    def _schedulers(self, user_id: str) -> tuple[Scheduler, Scheduler]:
+        with self._lock:
+            hit = self._cache.get(user_id)
+        if hit is not None:
+            return hit
+        weights = load_saved_weights(self.engine, user_id)
+        try:
+            built = build_scheduler(self.settings, weights)
+        except ValueError:
+            # Saved weights failed FSRS's bounds check — fall back to defaults.
+            built = build_scheduler(self.settings, None)
+        with self._lock:
+            self._cache[user_id] = built
+        return built
 
-    def set_schedulers(self, scheduler: Scheduler, preview_scheduler: Scheduler) -> None:
-        """Hot-swap the live schedulers (after optimising) with no restart."""
-        with self._sched_lock:
-            self.scheduler = scheduler
-            self.preview_scheduler = preview_scheduler
+    def invalidate(self, user_id: str) -> None:
+        """Drop the cached schedulers so the next access rebuilds from saved weights."""
+        with self._lock:
+            self._cache.pop(user_id, None)
 
-    def _preview_from(self, card_json: dict | None, now: datetime) -> dict[str, float]:
-        """Seconds until the next review for each rating, from a given card state.
-
-        Uses the fuzz-free preview scheduler so the button hints match what they imply.
-        """
-        _, preview = self._schedulers()
+    def _preview_from(self, user_id: str, card_json: dict | None, now: datetime) -> dict[str, float]:
+        """Seconds until the next review for each rating, from a given card state."""
+        _, preview = self._schedulers(user_id)
         out: dict[str, float] = {}
         for value, name in RATING_NAMES.items():
             base = Card.from_dict(card_json) if card_json else Card(due=now)
@@ -111,53 +117,55 @@ class ReviewStore:
 
     # ------------------------------------------------------------------ reads
 
-    def schedules(self) -> dict[str, dict[str, float]]:
+    def schedules(self, user_id: str) -> dict[str, dict[str, float]]:
         """``{question_id: {due, state, reps}}`` for the picker."""
         with Session(self.engine) as session:
             rows = session.exec(
                 select(Progress.question_id, Progress.due, Progress.state, Progress.reps)
+                .where(Progress.user_id == user_id)
             ).all()
         return {r[0]: {"due": r[1], "state": r[2], "reps": r[3]} for r in rows}
 
-    def stats(self, now: datetime | None = None) -> list[dict]:
+    def stats(self, user_id: str, now: datetime | None = None) -> list[dict]:
         now = now or _now()
-        scheduler, _ = self._schedulers()
+        scheduler, _ = self._schedulers(user_id)
         with Session(self.engine) as session:
-            rows = session.exec(select(Progress)).all()
+            rows = session.exec(select(Progress).where(Progress.user_id == user_id)).all()
         return [_to_dict(p, scheduler, now) for p in rows]
 
-    def get(self, question_id: str, now: datetime | None = None) -> dict | None:
+    def get(self, user_id: str, question_id: str, now: datetime | None = None) -> dict | None:
         now = now or _now()
-        scheduler, _ = self._schedulers()
+        scheduler, _ = self._schedulers(user_id)
         with Session(self.engine) as session:
             p = session.get(Progress, question_id)
-        return _to_dict(p, scheduler, now) if p else None
+        if p is None or p.user_id != user_id:
+            return None
+        return _to_dict(p, scheduler, now)
 
-    def preview(self, question_id: str, now: datetime | None = None) -> dict[str, float]:
-        now = now or _now()
-        with Session(self.engine) as session:
-            p = session.get(Progress, question_id)
-        return self._preview_from(p.card_json if p else None, now)
-
-    def snapshot(self, question_id: str, now: datetime | None = None) -> dict:
+    def snapshot(self, user_id: str, question_id: str, now: datetime | None = None) -> dict:
         """Progress + per-rating preview from a SINGLE consistent card read."""
         now = now or _now()
-        scheduler, _ = self._schedulers()
+        scheduler, _ = self._schedulers(user_id)
         with Session(self.engine) as session:
             p = session.get(Progress, question_id)
+        if p is not None and p.user_id != user_id:
+            p = None
         return {
             "progress": _to_dict(p, scheduler, now) if p else None,
-            "preview": self._preview_from(p.card_json if p else None, now),
+            "preview": self._preview_from(user_id, p.card_json if p else None, now),
         }
 
-    def review_count(self) -> int:
+    def review_count(self, user_id: str) -> int:
         with Session(self.engine) as session:
-            return session.exec(select(func.count()).select_from(Review)).one()
+            return session.exec(
+                select(func.count()).select_from(Review).where(Review.user_id == user_id)
+            ).one()
 
     # ----------------------------------------------------------------- writes
 
     def record(
         self,
+        user_id: str,
         question_id: str,
         rating: int,
         *,
@@ -169,7 +177,7 @@ class ReviewStore:
             raise ValueError("rating must be 1 (Again), 2 (Hard), 3 (Good) or 4 (Easy)")
         now = now or _now()
         meta = meta or {}
-        scheduler, _ = self._schedulers()
+        scheduler, _ = self._schedulers(user_id)
 
         with Session(self.engine) as session:
             # Serialise the read-modify-write for this card across all connections.
@@ -178,12 +186,15 @@ class ReviewStore:
                 {"k": question_id},
             )
             p = session.get(Progress, question_id)
+            if p is not None and p.user_id != user_id:
+                raise PermissionError("card belongs to another user")
             card = Card.from_dict(p.card_json) if p else Card(due=now)
             # ── the FSRS model runs here: updates DSR state and picks the next due ──
             card, _ = scheduler.review_card(card, Rating(rating), review_datetime=now)
 
             if p is None:
-                p = Progress(question_id=question_id, card_json=card.to_dict(), due=0, state=0)
+                p = Progress(question_id=question_id, user_id=user_id,
+                             card_json=card.to_dict(), due=0, state=0)
                 session.add(p)
 
             p.card_json = card.to_dict()
@@ -198,24 +209,27 @@ class ReviewStore:
             p.section = meta.get("section", p.section)
             p.question_text = meta.get("question_text", p.question_text)
 
-            session.add(Review(question_id=question_id, rating=rating, reviewed_at=now.timestamp()))
+            session.add(Review(user_id=user_id, question_id=question_id,
+                               rating=rating, reviewed_at=now.timestamp()))
             result = _to_dict(p, scheduler, now)
             session.commit()
             return result
 
     # ------------------------------------------------------------ FSRS weights
 
-    def latest_params(self) -> FsrsParams | None:
+    def latest_params(self, user_id: str) -> FsrsParams | None:
         with Session(self.engine) as session:
             return session.exec(
-                select(FsrsParams).order_by(FsrsParams.id.desc()).limit(1)
+                select(FsrsParams).where(FsrsParams.user_id == user_id)
+                .order_by(FsrsParams.id.desc()).limit(1)
             ).first()
 
     def save_weights(
-        self, weights: list[float], desired_retention: float, review_count: int,
+        self, user_id: str, weights: list[float], desired_retention: float, review_count: int,
         now: datetime | None = None,
     ) -> FsrsParams:
         row = FsrsParams(
+            user_id=user_id,
             weights=list(weights),
             desired_retention=desired_retention,
             review_count=review_count,
@@ -225,21 +239,18 @@ class ReviewStore:
             session.add(row)
             session.commit()
             session.refresh(row)
-            return row
+        self.invalidate(user_id)  # next access rebuilds schedulers from the new weights
+        return row
 
-    def review_logs(self) -> list:
-        """Build ``fsrs.ReviewLog`` objects from the raw log, for the Optimizer.
-
-        Card identity only needs to be consistent per question, so each question maps
-        to a synthetic integer card id; the optimizer groups and time-sorts internally.
-        """
+    def review_logs(self, user_id: str) -> list:
+        """Build ``fsrs.ReviewLog`` objects from this user's raw log, for the Optimizer."""
         from fsrs import ReviewLog
 
         with Session(self.engine) as session:
             rows = session.exec(
-                select(Review.question_id, Review.rating, Review.reviewed_at).order_by(
-                    Review.reviewed_at
-                )
+                select(Review.question_id, Review.rating, Review.reviewed_at)
+                .where(Review.user_id == user_id)
+                .order_by(Review.reviewed_at)
             ).all()
         card_ids: dict[str, int] = {}
         logs = []
@@ -280,14 +291,17 @@ def build_scheduler(settings, weights: list[float] | None = None) -> tuple[Sched
     return live, preview
 
 
-def load_saved_weights(engine) -> list[float] | None:
+def load_saved_weights(engine, user_id: str) -> list[float] | None:
     with Session(engine) as session:
-        row = session.exec(select(FsrsParams).order_by(FsrsParams.id.desc()).limit(1)).first()
+        row = session.exec(
+            select(FsrsParams).where(FsrsParams.user_id == user_id)
+            .order_by(FsrsParams.id.desc()).limit(1)
+        ).first()
     return list(row.weights) if row else None
 
 
 def open_store(settings) -> ReviewStore:
-    """Wire up the store: engine, tables, and schedulers seeded from saved weights."""
+    """Wire up the store: engine + tables. Schedulers are built per user on demand."""
     if not settings.database_url:
         raise RuntimeError(
             "DATABASE_URL is required — this app stores review history in PostgreSQL. "
@@ -295,11 +309,4 @@ def open_store(settings) -> ReviewStore:
             "postgresql://user:pass@host:5432/questions"
         )
     engine = make_engine(settings.database_url)
-    weights = load_saved_weights(engine)
-    try:
-        live, preview = build_scheduler(settings, weights)
-    except ValueError:
-        # Saved weights failed FSRS's bounds check — fall back to defaults rather
-        # than refuse to boot.
-        live, preview = build_scheduler(settings, None)
-    return ReviewStore(engine, live, preview)
+    return ReviewStore(engine, settings)

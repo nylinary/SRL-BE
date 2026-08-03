@@ -23,10 +23,36 @@ def _empty_doc() -> dict:
     return {"type": "doc", "content": []}
 
 
+class User(SQLModel, table=True):
+    __tablename__ = "users"
+
+    id: str = Field(primary_key=True)  # uuid hex
+    email: str | None = Field(default=None, index=True)  # may be null (e.g. VK w/o email)
+    name: str = ""
+    avatar_url: str = ""
+    provider: str = ""          # last provider used to sign in
+    is_admin: bool = False
+    created_at: float = 0.0
+    last_login: float = 0.0
+
+
+class OAuthAccount(SQLModel, table=True):
+    """A (provider, subject) identity linked to a user — lets one user attach several."""
+
+    __tablename__ = "oauth_accounts"
+
+    id: int | None = Field(default=None, primary_key=True)
+    provider: str = Field(index=True)
+    subject: str = Field(index=True)   # the provider's stable user id
+    user_id: str = Field(index=True)
+    created_at: float = 0.0
+
+
 class Card(SQLModel, table=True):
     __tablename__ = "cards"
 
     id: str = Field(primary_key=True)
+    user_id: str = Field(default="", index=True)
     # ProseMirror/TipTap documents — the reusable rich-text content model.
     question: dict = Field(default_factory=_empty_doc, sa_column=Column(JSONB, nullable=False))
     answer: dict = Field(default_factory=_empty_doc, sa_column=Column(JSONB, nullable=False))
@@ -34,7 +60,7 @@ class Card(SQLModel, table=True):
     subtheme: str = ""
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
     position: float = Field(default=0.0, index=True)  # manual ordering
-    created_at: float = 0.0
+    created_at: float = Field(default=0.0, index=True)
     updated_at: float = Field(default=0.0, index=True)
 
 
@@ -42,6 +68,7 @@ class Progress(SQLModel, table=True):
     __tablename__ = "progress"
 
     question_id: str = Field(primary_key=True)
+    user_id: str = Field(default="", index=True)
     card_json: dict = Field(sa_column=Column(JSONB, nullable=False))
     due: float = Field(index=True)
     state: int
@@ -59,6 +86,7 @@ class Review(SQLModel, table=True):
     __tablename__ = "reviews"
 
     id: int | None = Field(default=None, primary_key=True)
+    user_id: str = Field(default="", index=True)
     question_id: str = Field(index=True)
     rating: int
     reviewed_at: float
@@ -68,6 +96,7 @@ class FsrsParams(SQLModel, table=True):
     __tablename__ = "fsrs_params"
 
     id: int | None = Field(default=None, primary_key=True)
+    user_id: str = Field(default="", index=True)
     weights: list[float] = Field(sa_column=Column(JSONB, nullable=False))
     desired_retention: float
     review_count: int
@@ -86,9 +115,34 @@ def normalise_dsn(database_url: str) -> str:
     return database_url
 
 
+# Additive, idempotent migrations for databases that predate the multi-user columns.
+# create_all() only creates missing *tables*; it never ALTERs an existing one, so the
+# user_id columns are added here. All statements are safe to run on every boot.
+_MIGRATIONS = [
+    "ALTER TABLE cards ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",
+    "ALTER TABLE progress ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",
+    "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",
+    "ALTER TABLE fsrs_params ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",
+    "CREATE INDEX IF NOT EXISTS ix_cards_user_id ON cards (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_cards_created_at ON cards (created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_progress_user_id ON progress (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_reviews_user_id ON reviews (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_fsrs_params_user_id ON fsrs_params (user_id)",
+]
+
+
+def run_migrations(engine) -> None:
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        for statement in _MIGRATIONS:
+            conn.execute(text(statement))
+
+
 def make_engine(database_url: str):
     from sqlmodel import create_engine
 
     engine = create_engine(normalise_dsn(database_url), pool_pre_ping=True)
-    SQLModel.metadata.create_all(engine)
+    SQLModel.metadata.create_all(engine)  # new tables (users, oauth_accounts)
+    run_migrations(engine)                # add user_id to pre-existing tables
     return engine

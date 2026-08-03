@@ -1,35 +1,43 @@
-"""FastAPI app: FSRS-scheduled study over your own cards (authored in the editor).
+"""FastAPI app: multi-user, FSRS-scheduled study over each user's own cards.
 
-Cards live in Postgres as ProseMirror documents (see ``content.py``). GitBook is no
-longer the source — it survives only as a one-time importer (``POST /api/import/gitbook``).
+Every user signs in with a social provider (Google/GitHub/Yandex/VK), gets a JWT,
+and sees only their own cards, schedule, history, and trained weights. Cards are
+ProseMirror documents (see ``content.py``). GitBook is gone except for ``/asset``,
+which still proxies images referenced by already-imported cards.
 """
 
 from __future__ import annotations
 
 import random
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from content import CardRepository, doc_to_text, html_to_doc, render_doc
+from auth import oauth
+from auth.deps import bind_users, get_current_user, require_admin
+from auth.oauth import OAuthError
+from auth.tokens import AuthError, issue_session, issue_state, read_state
+from auth.users import UserRepository
+from content import CardRepository, doc_to_text, render_doc
 from gitbook import MarkdownSource, SourceError, get_settings
-from gitbook.models import Card
-from gitbook.render import render_answer, render_inline
+from gitbook.models import Card, User
 from gitbook.optimizer import NotEnoughReviews, OptimizerService, OptimizerUnavailable
 from gitbook.store import open_store
 
 settings = get_settings()
-source = MarkdownSource(settings)            # used only by the GitBook importer now
+source = MarkdownSource(settings)            # used only by the /asset image proxy now
 store = open_store(settings)
 cards = CardRepository(store.engine)
 optimizer = OptimizerService(store, settings)
+users = UserRepository(store.engine)
+bind_users(users)
 
-# API-only: the React frontend (SRL-FE) is deployed separately and calls this over HTTP.
 app = FastAPI(title="SRL API")
 app.add_middleware(
     CORSMiddleware,
@@ -40,10 +48,10 @@ app.add_middleware(
 
 UNCATEGORISED = "Без раздела"
 RATINGS = [
-    {"value": 1, "key": "again", "label": "Не помню"},
-    {"value": 2, "key": "hard", "label": "Тяжело"},
-    {"value": 3, "key": "good", "label": "Вспомнил"},
-    {"value": 4, "key": "easy", "label": "Легко"},
+    {"value": 1, "key": "again", "label": "Again"},
+    {"value": 2, "key": "hard", "label": "Hard"},
+    {"value": 3, "key": "good", "label": "Good"},
+    {"value": 4, "key": "easy", "label": "Easy"},
 ]
 _LONE_P = re.compile(r"^<p>(.*)</p>$", re.DOTALL)
 
@@ -105,8 +113,8 @@ def _meta(card: Card) -> dict[str, str]:
     }
 
 
-def _serialise(card: Card, now: datetime) -> dict[str, object]:
-    snapshot = store.snapshot(card.id, now)  # progress + preview from one consistent read
+def _serialise(card: Card, now: datetime, user_id: str) -> dict[str, object]:
+    snapshot = store.snapshot(user_id, card.id, now)  # progress + preview, one read
     return {
         "id": card.id,
         **_meta(card),
@@ -146,6 +154,17 @@ def _card_full(card: Card) -> dict:
     }
 
 
+def _user_public(user: User) -> dict:
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "avatar_url": user.avatar_url,
+        "provider": user.provider,
+        "is_admin": user.is_admin,
+    }
+
+
 def _pick(pool, schedules, exclude, mode, now):
     """FSRS order drives it; `exclude` (card on screen) prevents a repeat in a row."""
     if mode == "random":
@@ -171,12 +190,55 @@ def _pick(pool, schedules, exclude, mode, now):
     return next((c for c in queue if c.id not in exclude), queue[0])
 
 
-# --------------------------------------------------------------------- routes
+# --------------------------------------------------------------------- auth
 
 @app.get("/")
 def root():
     return {"service": "SRL API", "docs": "/docs"}
 
+
+@app.get("/api/auth/providers")
+def auth_providers():
+    """Which social logins are configured on this deployment."""
+    return {"providers": oauth.available_providers()}
+
+
+@app.get("/api/auth/{provider}/login")
+def auth_login(provider: str):
+    if provider not in oauth.available_providers():
+        raise HTTPException(status_code=404, detail="Provider not available")
+    state = issue_state(provider, secrets.token_urlsafe(16))
+    try:
+        return RedirectResponse(oauth.authorize_url(provider, state))
+    except OAuthError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+
+
+@app.get("/api/auth/{provider}/callback")
+def auth_callback(provider: str, code: str | None = None, state: str | None = None,
+                  error: str | None = None):
+    front = settings.frontend_url or ""
+    dest = f"{front}/#/auth/callback"
+    if error or not code or not state:
+        return RedirectResponse(f"{dest}?error={error or 'login_failed'}")
+    try:
+        payload = read_state(state)
+        if payload.get("provider") != provider:
+            raise AuthError("state/provider mismatch")
+        profile = oauth.exchange(provider, code)
+        user = users.upsert_from_profile(profile)
+        token = issue_session(user_id=user.id, email=user.email, is_admin=user.is_admin)
+    except (AuthError, OAuthError) as err:
+        return RedirectResponse(f"{dest}?error={type(err).__name__}")
+    return RedirectResponse(f"{dest}?token={token}")
+
+
+@app.get("/api/auth/me")
+def auth_me(user: User = Depends(get_current_user)):
+    return _user_public(user)
+
+
+# --------------------------------------------------------------------- config
 
 @app.get("/api/config")
 def get_config():
@@ -184,9 +246,9 @@ def get_config():
 
 
 @app.get("/api/index")
-def get_index():
+def get_index(user: User = Depends(get_current_user)):
     """Theme/subtheme tree with counts, for the training filters."""
-    pool = cards.all()
+    pool = cards.all(user.id)
     themes: dict[str, dict] = {}
     for card in pool:
         answered = _has_answer(card)
@@ -215,20 +277,20 @@ def get_index():
 
 
 @app.post("/api/questions/random")
-def random_question(req: RandomRequest):
-    pool = [c for c in cards.all() if _matches(c, req)]
+def random_question(req: RandomRequest, user: User = Depends(get_current_user)):
+    pool = [c for c in cards.all(user.id) if _matches(c, req)]
     if not pool:
         return JSONResponse(status_code=404, content={"detail": "No cards match the filters."})
 
     now_epoch = time.time()
     now_dt = datetime.now(timezone.utc)
-    schedules = store.schedules()
+    schedules = store.schedules(user.id)
     card = _pick(pool, schedules, set(req.exclude), req.mode, now_epoch)
 
     due_count = sum(1 for c in pool if c.id in schedules and schedules[c.id]["due"] <= now_epoch)
     new_count = sum(1 for c in pool if c.id not in schedules)
     return {
-        "question": _serialise(card, now_dt),
+        "question": _serialise(card, now_dt, user.id),
         "pool_size": len(pool),
         "due_count": due_count,
         "new_count": new_count,
@@ -236,18 +298,19 @@ def random_question(req: RandomRequest):
 
 
 @app.post("/api/reviews")
-def record_review(req: ReviewRequest):
-    card = cards.get(req.question_id)
-    meta = _meta(card) if card else None
-    progress = store.record(req.question_id, req.rating, meta=meta)
+def record_review(req: ReviewRequest, user: User = Depends(get_current_user)):
+    card = cards.get(user.id, req.question_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Card not found")
+    progress = store.record(user.id, req.question_id, req.rating, meta=_meta(card))
     return {"progress": progress}
 
 
 @app.get("/api/stats")
-def get_stats():
-    live_ids = {c.id for c in cards.all()}
+def get_stats(user: User = Depends(get_current_user)):
+    live_ids = {c.id for c in cards.all(user.id)}
     now = datetime.now(timezone.utc)
-    rows = store.stats(now)
+    rows = store.stats(user.id, now)
     for row in rows:
         row["orphaned"] = row["question_id"] not in live_ids
     return {"rows": rows, "now": now.timestamp()}
@@ -257,64 +320,71 @@ def get_stats():
 
 @app.get("/api/cards")
 def list_cards(
+    user: User = Depends(get_current_user),
     theme: str | None = None,
     subtheme: str | None = None,
     search: str | None = None,
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ):
-    rows = cards.list(theme=theme, subtheme=subtheme, search=search, limit=limit, offset=offset)
-    return {"cards": [_card_summary(c) for c in rows], "total": cards.count()}
+    rows = cards.list(user.id, theme=theme, subtheme=subtheme, search=search, limit=limit, offset=offset)
+    return {"cards": [_card_summary(c) for c in rows], "total": cards.count(user.id)}
 
 
 @app.post("/api/cards", status_code=201)
-def create_card(body: CardIn):
-    return _card_full(cards.create(body.model_dump()))
+def create_card(body: CardIn, user: User = Depends(get_current_user)):
+    limit = settings.daily_card_limit
+    if limit > 0 and cards.created_since(user.id, time.time() - 86400) >= limit:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily limit reached: at most {limit} new cards per 24 hours.",
+        )
+    return _card_full(cards.create(user.id, body.model_dump()))
 
 
 @app.get("/api/cards/{card_id}")
-def get_card(card_id: str):
-    card = cards.get(card_id)
+def get_card(card_id: str, user: User = Depends(get_current_user)):
+    card = cards.get(user.id, card_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
     return _card_full(card)
 
 
 @app.get("/api/cards/{card_id}/study")
-def study_card(card_id: str):
+def study_card(card_id: str, user: User = Depends(get_current_user)):
     """The study-screen view of one card — used to refresh in place after an inline edit."""
-    card = cards.get(card_id)
+    card = cards.get(user.id, card_id)
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
-    return _serialise(card, datetime.now(timezone.utc))
+    return _serialise(card, datetime.now(timezone.utc), user.id)
 
 
 @app.put("/api/cards/{card_id}")
-def update_card(card_id: str, body: CardIn):
-    card = cards.update(card_id, body.model_dump(exclude_unset=True))
+def update_card(card_id: str, body: CardIn, user: User = Depends(get_current_user)):
+    card = cards.update(user.id, card_id, body.model_dump(exclude_unset=True))
     if card is None:
         raise HTTPException(status_code=404, detail="Card not found")
     return _card_full(card)
 
 
 @app.delete("/api/cards/{card_id}", status_code=204)
-def delete_card(card_id: str):
-    if not cards.delete(card_id):
+def delete_card(card_id: str, user: User = Depends(get_current_user)):
+    if not cards.delete(user.id, card_id):
         raise HTTPException(status_code=404, detail="Card not found")
     return Response(status_code=204)
 
 
-# ------------------------------------------------------------ optimizer + import
+# ------------------------------------------------------------ optimizer
 
 @app.get("/api/optimizer/status")
-def optimizer_status():
-    return optimizer.status()
+def optimizer_status(user: User = Depends(get_current_user)):
+    return optimizer.status(user.id)
 
 
 @app.post("/api/optimizer/run")
-def optimizer_run():
+def optimizer_run(user: User = Depends(get_current_user)):
     try:
-        return optimizer.run()
+        return optimizer.run(user.id)
     except OptimizerUnavailable as error:
         raise HTTPException(status_code=501, detail=str(error)) from error
     except NotEnoughReviews as error:
@@ -323,49 +393,20 @@ def optimizer_run():
         raise HTTPException(status_code=500, detail=f"Optimisation failed: {error}") from error
 
 
-@app.post("/api/import/gitbook")
-def import_gitbook(replace: bool = False):
-    """Import the GitBook export into editable cards.
+# ------------------------------------------------------------------- admin
 
-    Goes through the GitBook renderer so inline markup (marks, `code`, code blocks,
-    lists) becomes real ProseMirror formatting instead of literal HTML. Idempotent by
-    text; ``?replace=true`` wipes existing cards first for a clean re-import.
-    """
-    try:
-        questions = source.load(force=True)
-    except SourceError as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-
-    if replace:
-        cards.delete_all()
-
-    src = settings.source_dir
-    existing = {(c.theme, doc_to_text(c.question)) for c in cards.all()}
-    created = 0
-    for question in questions:
-        key = (question.theme, question.question_text)
-        if key in existing:
-            continue
-        cards.create({
-            "question": html_to_doc(render_inline(question.question, src)),
-            "answer": html_to_doc(render_answer(question.body, src)),
-            "theme": question.theme,
-            "subtheme": question.subtheme,
-            "tags": [question.section] if question.section else [],
-        })
-        existing.add(key)
-        created += 1
-    return {"imported": created, "total_cards": cards.count()}
+@app.post("/api/admin/claim-orphans")
+def claim_orphans(user: User = Depends(require_admin)):
+    """One-shot: assign all pre-multi-user rows (no owner) to the calling admin."""
+    return {"claimed": users.claim_orphans(user.id), "user_id": user.id}
 
 
-@app.post("/api/refresh")
-def refresh():
-    """Reload the study pool (cards are already live in the DB — this is a no-op count)."""
-    return {"total": cards.count(), "status": {"source": "cards", "stale": False}}
-
+# --------------------------------------------------------------------- assets
 
 @app.get("/asset")
 def asset(path: str = Query(..., description="Repository-relative asset path")):
+    # Public read-only: <img> tags can't send Authorization headers, and imported
+    # images aren't sensitive. Serves assets referenced by already-imported cards.
     try:
         content, content_type = source.fetch_asset(path)
     except SourceError as error:
