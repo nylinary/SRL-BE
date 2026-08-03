@@ -37,6 +37,9 @@ cards = CardRepository(store.engine)
 optimizer = OptimizerService(store, settings)
 users = UserRepository(store.engine)
 bind_users(users)
+# One-time (idempotent) cleanup: normalise stored emails and merge accounts that are the
+# same mailbox — e.g. Gmail dot/alias variants registered before canonicalization existed.
+users.dedupe_by_email()
 
 app = FastAPI(title="SRL API")
 app.add_middleware(

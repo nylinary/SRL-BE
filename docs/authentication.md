@@ -74,6 +74,14 @@ aliases of one mailbox are treated as the same account:
 This is applied to `ADMIN_EMAILS` matching, password registration/login, and link-by-email.
 The canonical form is what's stored in `users.email` (and shown in the UI).
 
+**One-time cleanup on boot:** `UserRepository.dedupe_by_email()` (run at startup from
+`main.py`, under a Postgres advisory lock) normalises any pre-canonicalization emails and
+**merges** accounts that resolve to the same mailbox — the admin (else earliest) account
+absorbs the others' cards/progress/reviews/weights/oauth links, taking their password/
+avatar/name if it lacked them. Idempotent. This is what heals duplicate accounts created
+before canonicalization existed (e.g. `e.didar.2001@` and `e.didar2001@` registered
+separately).
+
 ## Account identity & linking
 
 - A `(provider, subject)` pair is the stable key for a social login (`oauth_accounts`).

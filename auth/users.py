@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 import uuid
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from gitbook.config import canonical_email, get_settings
@@ -37,6 +38,54 @@ class UserRepository:
     def get(self, user_id: str) -> User | None:
         with Session(self.engine) as session:
             return session.get(User, user_id)
+
+    # --------------------------------------------------- one-time email dedupe
+
+    def dedupe_by_email(self) -> dict[str, int]:
+        """Normalise stored emails to canonical form and merge accounts that turn out to
+        be the same mailbox (e.g. Gmail dot/alias variants registered before
+        canonicalization existed). Idempotent; safe to run on every boot.
+
+        Guarded by a Postgres advisory lock so concurrent workers don't race. For each
+        canonical-email group the primary is the admin, else the earliest account; the
+        others' cards/progress/reviews/weights/oauth links move to it and they're deleted.
+        """
+        merged = normalized = 0
+        with Session(self.engine) as session:
+            session.execute(text("SELECT pg_advisory_xact_lock(4242424242)"))
+            groups: dict[str, list[User]] = {}
+            for user in session.exec(select(User)).all():
+                canon = canonical_email(user.email)
+                if canon:
+                    groups.setdefault(canon, []).append(user)
+
+            for canon, members in groups.items():
+                if len(members) == 1:
+                    if members[0].email != canon:
+                        members[0].email = canon
+                        session.add(members[0]); normalized += 1
+                    continue
+                # admin first, then earliest created — that account absorbs the rest.
+                members.sort(key=lambda u: (not u.is_admin, u.created_at or 0.0))
+                primary, dups = members[0], members[1:]
+                for dup in dups:
+                    for model in (Card, Progress, Review, FsrsParams, OAuthAccount):
+                        for row in session.exec(select(model).where(model.user_id == dup.id)).all():
+                            row.user_id = primary.id
+                            session.add(row)
+                    primary.password_hash = primary.password_hash or dup.password_hash
+                    primary.avatar_url = primary.avatar_url or dup.avatar_url
+                    primary.name = primary.name or dup.name
+                    session.delete(dup); merged += 1
+                primary.email = canon
+                primary.is_admin = get_settings().is_admin_email(canon)
+                session.add(primary)
+
+            session.commit()
+        if merged or normalized:
+            print(f"[users] email dedupe: merged {merged} duplicate account(s), "
+                  f"normalized {normalized} email(s)")
+        return {"merged": merged, "normalized": normalized}
 
     # --------------------------------------------------------- email / password
 
