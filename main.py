@@ -509,6 +509,14 @@ def import_gitbook(user: User = Depends(require_admin)):
             "reconnected": reconnected, "total_cards": cards.count(user.id)}
 
 
+@app.post("/api/admin/purge-orphaned")
+def purge_orphaned(user: User = Depends(require_admin)):
+    """Delete the caller's review history that isn't linked to a real card (the
+    'removed from source' rows). Cards are untouched — only dangling history is removed."""
+    live_ids = {c.id for c in cards.all(user.id)}
+    return {"deleted": store.purge_orphaned(user.id, live_ids), "user_id": user.id}
+
+
 @app.post("/api/admin/restore-orphaned")
 def restore_orphaned(user: User = Depends(require_admin)):
     """Rebuild cards for the caller's study history whose card was removed from the source.

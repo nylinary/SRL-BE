@@ -209,6 +209,20 @@ class ReviewStore:
             session.commit()
             return True
 
+    def purge_orphaned(self, user_id: str, live_ids: set[str]) -> dict[str, int]:
+        """Delete this user's progress + review rows that aren't linked to a real card
+        (question_id not among ``live_ids``). Cleans the 'removed from source' clutter."""
+        deleted_progress = deleted_reviews = 0
+        with Session(self.engine) as session:
+            for p in session.exec(select(Progress).where(Progress.user_id == user_id)).all():
+                if p.question_id not in live_ids:
+                    session.delete(p); deleted_progress += 1
+            for r in session.exec(select(Review).where(Review.user_id == user_id)).all():
+                if r.question_id not in live_ids:
+                    session.delete(r); deleted_reviews += 1
+            session.commit()
+        return {"progress": deleted_progress, "reviews": deleted_reviews}
+
     def review_count(self, user_id: str) -> int:
         with Session(self.engine) as session:
             return session.exec(
