@@ -10,7 +10,7 @@ carry `user_id` and every query is scoped to it.
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | str (PK) | uuid hex |
-| `email` | str? | indexed; may be null (VK without email) |
+| `email` | str? | indexed; stored **canonical** (see auth docs); may be null (VK) |
 | `name`, `avatar_url` | str | profile display |
 | `provider` | str | last provider used, or `"password"` |
 | `password_hash` | str? | set only for email/password accounts (bcrypt) |

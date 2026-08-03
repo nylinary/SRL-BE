@@ -85,6 +85,15 @@ print("admin email matching")
 check("admin flagged", get_settings().is_admin_email("Boss@Example.com") is True)
 check("non-admin not flagged", get_settings().is_admin_email("someone@else.com") is False)
 
+print("email canonicalization (Gmail dots/+tag)")
+from gitbook.config import canonical_email  # noqa: E402
+check("gmail dots removed", canonical_email("e.didar.2001@gmail.com") == "edidar2001@gmail.com")
+check("gmail +tag dropped", canonical_email("E.Didar.2001+srl@googlemail.com") == "edidar2001@gmail.com")
+check("gmail aliases compare equal",
+      canonical_email("e.didar2001@gmail.com") == canonical_email("e.didar.2001@gmail.com"))
+check("non-gmail dots kept", canonical_email("a.b@outlook.com") == "a.b@outlook.com")
+check("non-gmail +tag still dropped", canonical_email("a.b+x@outlook.com") == "a.b@outlook.com")
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed")

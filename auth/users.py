@@ -15,7 +15,7 @@ import uuid
 
 from sqlmodel import Session, select
 
-from gitbook.config import get_settings
+from gitbook.config import canonical_email, get_settings
 from gitbook.models import Card, FsrsParams, OAuthAccount, Progress, Review, User
 
 from .oauth import Profile
@@ -43,7 +43,7 @@ class UserRepository:
     def register_password(self, email: str, password: str, name: str = "") -> User:
         """Create a new email/password account. Fails if the email is already in use."""
         settings = get_settings()
-        email = email.strip().lower()
+        email = canonical_email(email) or email.strip().lower()
         with Session(self.engine) as session:
             existing = session.exec(select(User).where(User.email == email)).first()
             if existing is not None:
@@ -62,7 +62,7 @@ class UserRepository:
             return user
 
     def authenticate_password(self, email: str, password: str) -> User:
-        email = email.strip().lower()
+        email = canonical_email(email) or email.strip().lower()
         with Session(self.engine) as session:
             user = session.exec(select(User).where(User.email == email)).first()
             if user is None or not verify_password(password, user.password_hash):
@@ -88,11 +88,10 @@ class UserRepository:
 
             user: User | None = session.get(User, link.user_id) if link else None
 
+            canon = canonical_email(profile.email)
             # Link by verified email to an existing account when this identity is new.
-            if user is None and profile.email and profile.email_verified:
-                user = session.exec(
-                    select(User).where(User.email == profile.email)
-                ).first()
+            if user is None and canon and profile.email_verified:
+                user = session.exec(select(User).where(User.email == canon)).first()
 
             if user is None:
                 user = User(id=uuid.uuid4().hex, created_at=now)
@@ -108,8 +107,8 @@ class UserRepository:
             user.provider = profile.provider
             user.name = profile.name or user.name
             user.avatar_url = profile.avatar or user.avatar_url
-            if profile.email and (profile.email_verified or not user.email):
-                user.email = profile.email
+            if canon and (profile.email_verified or not user.email):
+                user.email = canon
             user.is_admin = settings.is_admin_email(user.email)
             user.last_login = now
 

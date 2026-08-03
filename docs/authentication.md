@@ -62,6 +62,18 @@ Then set `<PROVIDER>_CLIENT_ID` / `<PROVIDER>_CLIENT_SECRET` (see
 - Passwords are bcrypt-hashed (`auth/passwords.py`); only the hash is stored, in
   `users.password_hash`.
 
+## Email canonicalization
+
+Emails are normalised (`gitbook/config.py::canonical_email`) before matching or storing, so
+aliases of one mailbox are treated as the same account:
+
+- lowercased + trimmed; `+tag` suffix dropped;
+- for Gmail (`gmail.com`/`googlemail.com`) dots in the local part are removed and the domain
+  unified — Gmail ignores both, so `e.didar.2001@gmail.com` = `e.didar2001@gmail.com`.
+
+This is applied to `ADMIN_EMAILS` matching, password registration/login, and link-by-email.
+The canonical form is what's stored in `users.email` (and shown in the UI).
+
 ## Account identity & linking
 
 - A `(provider, subject)` pair is the stable key for a social login (`oauth_accounts`).

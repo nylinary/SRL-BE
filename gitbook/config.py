@@ -25,6 +25,29 @@ def load_dotenv(path: Path) -> None:
         os.environ.setdefault(key.strip(), value)
 
 
+def canonical_email(email: str | None) -> str | None:
+    """Normalise an email so aliases of one mailbox compare equal.
+
+    - lowercased and trimmed;
+    - ``+tag`` suffix dropped (alias on virtually every modern provider);
+    - for Gmail (``gmail.com``/``googlemail.com``) dots in the local part are removed and
+      the domain is unified — Gmail ignores both, so ``e.didar.2001@gmail.com`` and
+      ``e.didar2001@gmail.com`` are the same account.
+    Used for admin matching, account uniqueness, and link-by-email.
+    """
+    if not email:
+        return None
+    email = email.strip().lower()
+    if "@" not in email:
+        return email
+    local, _, domain = email.partition("@")
+    local = local.split("+", 1)[0]
+    if domain in ("gmail.com", "googlemail.com"):
+        local = local.replace(".", "")
+        domain = "gmail.com"
+    return f"{local}@{domain}"
+
+
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -104,14 +127,16 @@ class Settings:
         return os.path.dirname(self.file_path)
 
     def is_admin_email(self, email: str | None) -> bool:
-        return bool(email) and email.lower() in self.admin_emails
+        canon = canonical_email(email)
+        return bool(canon) and canon in self.admin_emails
 
     @classmethod
     def from_env(cls) -> "Settings":
         load_dotenv(BASE_DIR / ".env")
         cache_dir = Path(os.environ.get("CACHE_DIR", str(BASE_DIR / ".cache")))
         admin_emails = frozenset(
-            e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()
+            c for c in (canonical_email(e) for e in os.environ.get("ADMIN_EMAILS", "").split(","))
+            if c
         )
         return cls(
             gitlab_url=os.environ.get("GITLAB_URL", "https://gitlab.com").rstrip("/"),
