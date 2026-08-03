@@ -1,4 +1,4 @@
-"""Social login for Google, GitHub, Yandex and VK.
+"""Social login for Google, GitHub and Yandex.
 
 Each provider gets an authorize URL and a code→profile exchange. Profiles are
 normalised to a common shape so the rest of the app never sees provider quirks.
@@ -14,7 +14,7 @@ import httpx
 
 from gitbook.config import get_settings
 
-SUPPORTED = ("google", "github", "yandex", "vk")
+SUPPORTED = ("google", "github", "yandex")
 
 
 class OAuthError(Exception):
@@ -69,10 +69,6 @@ def authorize_url(provider: str, state: str) -> str:
         q = {"response_type": "code", "client_id": creds.client_id,
              "redirect_uri": redirect, "state": state}
         return "https://oauth.yandex.ru/authorize?" + urlencode(q)
-    if provider == "vk":
-        q = {"client_id": creds.client_id, "redirect_uri": redirect, "response_type": "code",
-             "scope": "email", "state": state, "v": "5.131", "display": "page"}
-        return "https://oauth.vk.com/authorize?" + urlencode(q)
     raise OAuthError(f"Unknown provider '{provider}'.")  # unreachable
 
 
@@ -89,8 +85,6 @@ def exchange(provider: str, code: str) -> Profile:
             return _github(client, creds, redirect, code)
         if provider == "yandex":
             return _yandex(client, creds, redirect, code)
-        if provider == "vk":
-            return _vk(client, creds, redirect, code)
     raise OAuthError(f"Unknown provider '{provider}'.")
 
 
@@ -149,18 +143,3 @@ def _yandex(client, creds, redirect, code) -> Profile:
         avatar = f"https://avatars.yandex.net/get-yapic/{info['default_avatar_id']}/islands-200"
     name = info.get("real_name") or info.get("display_name") or info.get("login") or ""
     return Profile("yandex", str(info["id"]), email, bool(email), name, avatar)
-
-
-def _vk(client, creds, redirect, code) -> Profile:
-    tok = client.get("https://oauth.vk.com/access_token", params={
-        "client_id": creds.client_id, "client_secret": creds.client_secret,
-        "redirect_uri": redirect, "code": code}).json()
-    access, user_id = tok.get("access_token"), tok.get("user_id")
-    if not access or not user_id:
-        raise OAuthError("VK returned no access token.")
-    email = tok.get("email")  # only present when the user granted the email scope
-    resp = client.get("https://api.vk.com/method/users.get", params={
-        "user_ids": user_id, "fields": "photo_200", "access_token": access, "v": "5.131"}).json()
-    u = (resp.get("response") or [{}])[0]
-    name = " ".join(filter(None, [u.get("first_name"), u.get("last_name")])) or f"vk{user_id}"
-    return Profile("vk", str(user_id), email, bool(email), name, u.get("photo_200") or "")

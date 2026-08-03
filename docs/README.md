@@ -22,7 +22,7 @@ schedule, review history, and trained FSRS weights.
 ## 30-second overview
 
 - **Stack:** FastAPI · SQLModel/SQLAlchemy 2 · PostgreSQL (psycopg 3) · py-fsrs · `uv`.
-- **Auth:** OAuth2 (Google/GitHub/Yandex/VK) or email+password → app-signed JWT (HS256),
+- **Auth:** OAuth2 (Google/GitHub/Yandex) or email+password → app-signed JWT (HS256),
   sent as `Authorization: Bearer` on every call.
 - **Isolation:** `user_id` on cards/progress/reviews/fsrs_params; all queries scoped.
 - **Limits:** 1000 new cards / 24h / user. Admin-only endpoints gated by `ADMIN_EMAILS`.

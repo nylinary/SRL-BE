@@ -2,7 +2,7 @@
 
 Two ways to sign in, both ending in the **same session JWT**:
 
-1. **Social OAuth2** — Google, GitHub, Yandex, VK.
+1. **Social OAuth2** — Google, GitHub, Yandex.
 2. **Email + password** — bcrypt-hashed, stored on the user row.
 
 ## The session token
@@ -34,7 +34,6 @@ email, email_verified, name, avatar)`:
 | Google | OpenID Connect; `email_verified` honoured. |
 | GitHub | Primary **verified** email fetched from `/user/emails`. |
 | Yandex | `login.yandex.ru/info`; email treated as verified. |
-| VK | Email only if the user granted it; often absent → the account can't email-link. |
 
 ### Registering the OAuth apps
 
@@ -49,7 +48,6 @@ For each provider you want, create an app and set its redirect/callback URL to:
 | Google | console.cloud.google.com/apis/credentials (Web OAuth client) | `openid email profile` |
 | GitHub | github.com/settings/developers (OAuth App) | `read:user user:email` |
 | Yandex | oauth.yandex.com/client/new | `login:email login:info` |
-| VK | dev.vk.com (Website app, enable Email) | `email` |
 
 Then set `<PROVIDER>_CLIENT_ID` / `<PROVIDER>_CLIENT_SECRET` (see
 [deployment.md](deployment.md)). A provider with either value missing is simply hidden.
@@ -88,7 +86,7 @@ separately).
 - A **new** social login carrying a *verified* email is linked to an existing account
   with the same email — so Google/GitHub/Yandex/**email-password** for one person converge
   on a single account and card set.
-- VK without email (or any unverified email) becomes its own account.
+- A login with no email (or an unverified one) becomes its own account.
 - Password registration refuses an email that already exists (it doesn't prove ownership
   of the address). Verified social login on that email later links to it.
 

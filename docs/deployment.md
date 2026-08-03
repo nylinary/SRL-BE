@@ -26,7 +26,7 @@ plugin). The backend is API-only; the frontend is a separate origin that calls i
 
 ### OAuth providers (each optional; a provider shows only when both are set)
 `GOOGLE_CLIENT_ID` · `GOOGLE_CLIENT_SECRET` · `GITHUB_CLIENT_ID` · `GITHUB_CLIENT_SECRET` ·
-`YANDEX_CLIENT_ID` · `YANDEX_CLIENT_SECRET` · `VK_CLIENT_ID` · `VK_CLIENT_SECRET`.
+`YANDEX_CLIENT_ID` · `YANDEX_CLIENT_SECRET`.
 Register each app with redirect URI `{PUBLIC_BACKEND_URL}/api/auth/{provider}/callback` —
 see [authentication.md](authentication.md#registering-the-oauth-apps).
 

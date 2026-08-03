@@ -77,7 +77,7 @@ class OAuthCreds:
 
 
 # Providers we know how to talk to; each is enabled only when its env creds are set.
-OAUTH_PROVIDERS = ("google", "github", "yandex", "vk")
+OAUTH_PROVIDERS = ("google", "github", "yandex")
 
 
 def _load_oauth() -> dict[str, OAuthCreds]:

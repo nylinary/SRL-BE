@@ -22,7 +22,6 @@ os.environ.update({
     "GOOGLE_CLIENT_ID": "gid", "GOOGLE_CLIENT_SECRET": "gsec",
     "GITHUB_CLIENT_ID": "hid", "GITHUB_CLIENT_SECRET": "hsec",
     "YANDEX_CLIENT_ID": "yid", "YANDEX_CLIENT_SECRET": "ysec",
-    "VK_CLIENT_ID": "vid", "VK_CLIENT_SECRET": "vsec",
     "DATABASE_URL": "postgresql://u:p@localhost:5432/x",  # never connected to here
 })
 
@@ -70,10 +69,10 @@ except AuthError:
     check("tampered token rejected", True)
 
 print("provider discovery + authorize URLs")
-check("all four providers configured", oauth.available_providers() == ["google", "github", "yandex", "vk"],
+check("all three providers configured", oauth.available_providers() == ["google", "github", "yandex"],
       str(oauth.available_providers()))
 for provider, host in [("google", "accounts.google.com"), ("github", "github.com"),
-                       ("yandex", "oauth.yandex.ru"), ("vk", "oauth.vk.com")]:
+                       ("yandex", "oauth.yandex.ru")]:
     url = oauth.authorize_url(provider, "STATE")
     ok = (host in url
           and "state=STATE" in url

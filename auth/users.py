@@ -4,7 +4,7 @@ Identity rule (chosen for this app):
 - A (provider, subject) pair is the stable key for a login.
 - New logins that carry a *verified* email are linked to an existing account with the
   same email, so Google/GitHub/Yandex for one person converge on one account.
-- VK without email (or any unverified email) becomes its own account.
+- A login without email (or any unverified email) becomes its own account.
 Admin status is re-evaluated from ADMIN_EMAILS on every login.
 """
 
