@@ -419,6 +419,7 @@ class CardRepository:
             subtheme=(data.get("subtheme") or "").strip(),
             tags=list(data.get("tags") or []),
             position=float(position) if position is not None else now,
+            source_extract_id=data.get("source_extract_id"),
             created_at=now,
             updated_at=now,
         )

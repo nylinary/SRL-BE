@@ -40,6 +40,21 @@ Logout is client-side (drop the token). There is no server session to revoke.
 `CardIn` = `{question, answer, theme, subtheme, tags[], position?}` where `question`/
 `answer` are ProseMirror docs (`{type:"doc", content:[…]}`).
 
+## Incremental reading
+
+A per-user tree of documents/extracts; cards are minted from extracts. See `docs/reading.md`.
+
+| Method | Path | Auth | Notes |
+|--------|------|:---:|-------|
+| GET | `/api/reading/tree` | 🔐 | Flat list of the caller's items (no heavy content) ordered by `position`; the client builds the tree → `{items:[…]}` |
+| GET | `/api/reading/items/{id}` | 🔐 | One item with full `content`. `404` if not yours |
+| POST | `/api/reading/documents` | 🔐 | Create a document from pasted text `{title?, content}` → the new node |
+| POST | `/api/reading/upload` | 🔐 | Multipart `file` (TXT/PDF, ≤20 MB); server extracts text → the new document. `400` unsupported/unreadable |
+| POST | `/api/reading/items/{id}/extract` | 🔐 | Lift a selection into a child extract `{content, title?}`. `404` if parent not yours |
+| PATCH | `/api/reading/items/{id}` | 🔐 | Update `{title?, content?}`. `404` if not yours |
+| DELETE | `/api/reading/items/{id}` | 🔐 | Delete the item **and its whole subtree** → `{deleted:n}`. `404` if not yours |
+| POST | `/api/reading/items/{id}/card` | 🔐 | Make a card from the extract `{question, answer?, theme?, subtheme?}`; `answer` defaults to the extract text, `source_extract_id` is set. **`429`** over the daily limit |
+
 ## Optimizer (per user)
 
 | Method | Path | Auth | Notes |

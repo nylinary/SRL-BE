@@ -14,6 +14,7 @@ Tables:
 
 from __future__ import annotations
 
+from sqlalchemy import Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Column, Field, SQLModel
 
@@ -61,8 +62,31 @@ class Card(SQLModel, table=True):
     subtheme: str = ""
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSONB, nullable=False))
     position: float = Field(default=0.0, index=True)  # manual ordering
+    source_extract_id: str | None = Field(default=None, index=True)  # if made from a reading extract
     created_at: float = Field(default=0.0, index=True)
     updated_at: float = Field(default=0.0, index=True)
+
+
+class ReadingItem(SQLModel, table=True):
+    """Incremental-reading tree: documents (roots) and their nested extracts.
+
+    A ``document`` (parent_id=None) holds imported text (TXT/PDF). An ``extract`` is a
+    selection lifted from its parent's text; extracts can themselves be extracted from,
+    giving an unbounded hierarchy. Cards are then made from extracts (answer = the text).
+    """
+
+    __tablename__ = "reading_items"
+
+    id: str = Field(primary_key=True)
+    user_id: str = Field(default="", index=True)
+    parent_id: str | None = Field(default=None, index=True)
+    kind: str = "extract"                 # 'document' | 'extract'
+    title: str = ""
+    content: str = Field(default="", sa_column=Column(Text, nullable=False))
+    source_kind: str = ""                 # 'text' | 'pdf' (documents only)
+    position: float = Field(default=0.0, index=True)
+    created_at: float = 0.0
+    updated_at: float = 0.0
 
 
 class Progress(SQLModel, table=True):
@@ -125,6 +149,7 @@ _MIGRATIONS = [
     "ALTER TABLE progress ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",
     "ALTER TABLE reviews ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",
     "ALTER TABLE fsrs_params ADD COLUMN IF NOT EXISTS user_id VARCHAR NOT NULL DEFAULT ''",
+    "ALTER TABLE cards ADD COLUMN IF NOT EXISTS source_extract_id VARCHAR",
     "CREATE INDEX IF NOT EXISTS ix_cards_user_id ON cards (user_id)",
     "CREATE INDEX IF NOT EXISTS ix_cards_created_at ON cards (created_at)",
     "CREATE INDEX IF NOT EXISTS ix_progress_user_id ON progress (user_id)",

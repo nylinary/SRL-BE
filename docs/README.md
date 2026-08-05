@@ -15,6 +15,7 @@ schedule, review history, and trained FSRS weights.
 | [authentication.md](authentication.md) | Social + email/password login, JWT, admin, provider setup |
 | [data-model.md](data-model.md) | Tables, per-user scoping, migrations, orphan claiming |
 | [api-reference.md](api-reference.md) | Every endpoint, auth requirements, payloads |
+| [reading.md](reading.md) | Incremental reading: document/extract tree, upload, card minting |
 | [spaced-repetition.md](spaced-repetition.md) | FSRS scheduling and the per-user optimizer |
 | [deployment.md](deployment.md) | Railway deploy, all env vars, first-run checklist |
 | [development.md](development.md) | Local setup, running, and the test suites |

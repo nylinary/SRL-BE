@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -27,16 +27,18 @@ from auth.tokens import AuthError, issue_session, issue_state, read_state
 from auth.users import BadCredentials, EmailTaken, UserRepository
 from content import CardRepository, doc_to_text, html_to_doc, render_doc
 from gitbook import MarkdownSource, SourceError, get_settings
-from gitbook.models import Card, User
+from gitbook.models import Card, ReadingItem, User
 from gitbook.optimizer import NotEnoughReviews, OptimizerService, OptimizerUnavailable
 from gitbook.render import render_answer, render_inline
 from gitbook.store import open_store
+from reading import ReadingError, ReadingRepository
 
 settings = get_settings()
 source = MarkdownSource(settings)            # used only by the /asset image proxy now
 store = open_store(settings)
 cards = CardRepository(store.engine)
 optimizer = OptimizerService(store, settings)
+reading = ReadingRepository(store.engine)
 users = UserRepository(store.engine)
 bind_users(users)
 # One-time (idempotent) cleanup: normalise stored emails and merge accounts that are the
@@ -92,6 +94,29 @@ class CardIn(BaseModel):
     subtheme: str = ""
     tags: list[str] = Field(default_factory=list)
     position: float | None = None
+
+
+class ReadingDocIn(BaseModel):
+    title: str = ""
+    content: str
+
+
+class ExtractIn(BaseModel):
+    content: str
+    title: str = ""
+
+
+class ReadingUpdate(BaseModel):
+    title: str | None = None
+    content: str | None = None
+
+
+class MakeCardRequest(BaseModel):
+    question: str = ""
+    answer: str | None = None      # defaults to the extract's text when omitted
+    theme: str = ""
+    subtheme: str = ""
+    tags: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------- card helpers
@@ -443,6 +468,107 @@ def delete_card(card_id: str, user: User = Depends(get_current_user)):
     if not cards.delete(user.id, card_id):
         raise HTTPException(status_code=404, detail="Card not found")
     return Response(status_code=204)
+
+
+# --------------------------------------------------- incremental reading
+
+def _text_doc(text: str) -> dict:
+    """Plain text → a ProseMirror doc, one paragraph per blank-line-separated block."""
+    blocks = [b.strip() for b in re.split(r"\n{2,}", (text or "").strip())]
+    content = [{"type": "paragraph", "content": [{"type": "text", "text": b}] if b else []}
+               for b in blocks] or [{"type": "paragraph"}]
+    return {"type": "doc", "content": content}
+
+
+def _reading_node(item: ReadingItem) -> dict:
+    return {"id": item.id, "parent_id": item.parent_id, "kind": item.kind,
+            "title": item.title, "source_kind": item.source_kind, "created_at": item.created_at}
+
+
+def _reading_full(item: ReadingItem) -> dict:
+    return {**_reading_node(item), "content": item.content, "updated_at": item.updated_at}
+
+
+@app.get("/api/reading/tree")
+def reading_tree(user: User = Depends(get_current_user)):
+    """All of the user's documents + extracts (no content) — client builds the tree."""
+    return {"items": [_reading_node(i) for i in reading.tree(user.id)]}
+
+
+@app.get("/api/reading/items/{item_id}")
+def reading_get(item_id: str, user: User = Depends(get_current_user)):
+    item = reading.get(user.id, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return _reading_full(item)
+
+
+@app.post("/api/reading/documents", status_code=201)
+def reading_create_document(body: ReadingDocIn, user: User = Depends(get_current_user)):
+    if not body.content.strip():
+        raise HTTPException(status_code=400, detail="Empty document.")
+    item = reading.create_document(user.id, body.title or "Untitled", body.content, "text")
+    return _reading_full(item)
+
+
+@app.post("/api/reading/upload", status_code=201)
+async def reading_upload(file: UploadFile = File(...), user: User = Depends(get_current_user)):
+    from reading import parse_upload
+
+    data = await file.read()
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 20 MB).")
+    try:
+        title, text, source_kind = parse_upload(file.filename or "", data)
+    except ReadingError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    item = reading.create_document(user.id, title, text, source_kind)
+    return _reading_full(item)
+
+
+@app.post("/api/reading/items/{item_id}/extract", status_code=201)
+def reading_extract(item_id: str, body: ExtractIn, user: User = Depends(get_current_user)):
+    if not body.content.strip():
+        raise HTTPException(status_code=400, detail="Nothing selected.")
+    item = reading.create_extract(user.id, item_id, body.content, body.title)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Parent not found")
+    return _reading_full(item)
+
+
+@app.patch("/api/reading/items/{item_id}")
+def reading_update(item_id: str, body: ReadingUpdate, user: User = Depends(get_current_user)):
+    item = reading.update(user.id, item_id, body.model_dump(exclude_unset=True))
+    if item is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return _reading_full(item)
+
+
+@app.delete("/api/reading/items/{item_id}", status_code=204)
+def reading_delete(item_id: str, user: User = Depends(get_current_user)):
+    if not reading.delete(user.id, item_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(status_code=204)
+
+
+@app.post("/api/reading/items/{item_id}/card", status_code=201)
+def reading_make_card(item_id: str, body: MakeCardRequest, user: User = Depends(get_current_user)):
+    """Create a card from an extract — the answer defaults to the extract's text."""
+    item = reading.get(user.id, item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    limit = settings.daily_card_limit
+    if limit > 0 and cards.created_since(user.id, time.time() - 86400) >= limit:
+        raise HTTPException(status_code=429,
+                            detail=f"Daily limit reached: at most {limit} new cards per 24 hours.")
+    answer_text = body.answer if body.answer is not None else item.content
+    card = cards.create(user.id, {
+        "question": _text_doc(body.question),
+        "answer": _text_doc(answer_text),
+        "theme": body.theme, "subtheme": body.subtheme, "tags": body.tags,
+        "source_extract_id": item.id,
+    })
+    return _card_full(card)
 
 
 # ------------------------------------------------------------ optimizer

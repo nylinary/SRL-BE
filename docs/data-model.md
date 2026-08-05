@@ -26,7 +26,17 @@ Links a social identity to a user, so one user can attach several providers.
 The authored content. `question`/`answer` are **ProseMirror/TipTap JSON** documents
 (JSONB). Columns: `id` (PK, uuid), **`user_id`** (indexed), `question`, `answer`,
 `theme` (indexed), `subtheme`, `tags` (JSONB), `position`, `created_at` (indexed),
-`updated_at` (indexed).
+`updated_at` (indexed), `source_extract_id` (indexed, nullable) — the
+`reading_items` extract a card was made from, or `NULL` if authored directly.
+
+### `reading_items`
+Incremental-reading library: a per-user self-referential tree of documents and extracts
+(`reading.py`). A **document** (`kind="document"`, `parent_id=NULL`) holds imported TXT/PDF
+text; an **extract** (`kind="extract"`) is a selection lifted from its parent and nests
+arbitrarily. Columns: `id` (PK, uuid), **`user_id`** (indexed), `parent_id` (indexed,
+nullable), `kind`, `title`, `content` (`TEXT`), `source_kind` (`'text'`/`'pdf'`, documents
+only), `position` (indexed, sort key), `created_at`, `updated_at`. Deleting an item removes
+its whole subtree. See `docs/reading.md`.
 
 ### `progress`
 One row per card = its FSRS scheduling state. `question_id` (PK) = the card id.
