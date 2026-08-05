@@ -30,8 +30,9 @@ Ownership is enforced on every operation — `get`/`update`/`delete`/`extract` r
 `parse_upload(filename, data) -> (title, text, source_kind)` (`reading.py`):
 
 - **PDF** — chosen when the name ends `.pdf` or the bytes start with `%PDF-`. Text is
-  extracted page-by-page with `pypdf`; a scanned/image-only PDF (no selectable text) is
-  rejected with `ReadingError`.
+  extracted page-by-page with `pypdf` on a **best-effort** basis (a scanned/image-only PDF
+  yields empty text but is still accepted — it's rendered visually, see below). The upload
+  endpoint stores the **original bytes** in `reading_blobs` for that document.
 - **Text** — chosen when the name ends `.txt`/`.md` or the bytes "look like text" (no NUL in
   the first 2 KB). Decoding tries UTF-16 **only** with a BOM, then `utf-8 → cp1251 →
   latin-1` (cp1251 before latin-1 so Cyrillic files decode correctly), falling back to
@@ -39,8 +40,18 @@ Ownership is enforced on every operation — `get`/`update`/`delete`/`extract` r
 - Anything else raises `ReadingError` → the endpoint returns `400`.
 
 Uploads are capped at 20 MB. Pasted text skips parsing entirely
-(`POST /api/reading/documents`). A document's `content` is split on blank lines into
+(`POST /api/reading/documents`). A text document's `content` is split on blank lines into
 paragraphs when rendered to the client (`main._text_doc`).
+
+## Viewing a PDF as-is
+
+A PDF document is **rendered, not transcribed**: the client fetches the raw bytes from
+`GET /api/reading/items/{id}/file` (`application/pdf`) and renders the actual pages with
+pdf.js (see the frontend `ReadingPage`/`PdfViewer`). pdf.js draws each page to a canvas with
+a transparent, selectable **text layer** on top, so selecting a passage and choosing
+**Extract** / **Make card** works over the real PDF exactly as it does over plain text — the
+resulting extract is stored as text and nests like any other. Extracts themselves are always
+text (only the top-level document is a PDF).
 
 ## Making a card
 

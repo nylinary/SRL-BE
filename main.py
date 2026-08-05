@@ -522,8 +522,19 @@ async def reading_upload(file: UploadFile = File(...), user: User = Depends(get_
         title, text, source_kind = parse_upload(file.filename or "", data)
     except ReadingError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    item = reading.create_document(user.id, title, text, source_kind)
+    # Keep the original bytes for PDFs so the client renders the document as-is.
+    blob = data if source_kind == "pdf" else None
+    item = reading.create_document(user.id, title, text, source_kind, blob=blob)
     return _reading_full(item)
+
+
+@app.get("/api/reading/items/{item_id}/file")
+def reading_file(item_id: str, user: User = Depends(get_current_user)):
+    """The original PDF bytes for a document, for the client-side viewer."""
+    data = reading.get_blob(user.id, item_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(content=data, media_type="application/pdf")
 
 
 @app.post("/api/reading/items/{item_id}/extract", status_code=201)

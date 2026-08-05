@@ -48,6 +48,7 @@ A per-user tree of documents/extracts; cards are minted from extracts. See `docs
 |--------|------|:---:|-------|
 | GET | `/api/reading/tree` | 🔐 | Flat list of the caller's items (no heavy content) ordered by `position`; the client builds the tree → `{items:[…]}` |
 | GET | `/api/reading/items/{id}` | 🔐 | One item with full `content`. `404` if not yours |
+| GET | `/api/reading/items/{id}/file` | 🔐 | The original PDF bytes (`application/pdf`) for a document, for the client-side viewer. `404` if not yours or no blob |
 | POST | `/api/reading/documents` | 🔐 | Create a document from pasted text `{title?, content}` → the new node |
 | POST | `/api/reading/upload` | 🔐 | Multipart `file` (TXT/PDF, ≤20 MB); server extracts text → the new document. `400` unsupported/unreadable |
 | POST | `/api/reading/items/{id}/extract` | 🔐 | Lift a selection into a child extract `{content, title?}`. `404` if parent not yours |

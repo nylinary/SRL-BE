@@ -69,6 +69,11 @@ check("sub-extract nests", sub.parent_id == ex.id)
 check("cross-user isolation", repo.get("someone-else", doc.id) is None)
 check("tree lists all three", len(repo.tree(U)) == 3)
 
+pdfdoc = repo.create_document(U, "PDF", "extracted text", "pdf", blob=b"%PDF-1.4 fake")
+check("blob stored", repo.get_blob(U, pdfdoc.id) == b"%PDF-1.4 fake")
+check("blob cross-user isolation", repo.get_blob("someone-else", pdfdoc.id) is None)
+check("blob removed with item", repo.delete(U, pdfdoc.id) == 1 and repo.get_blob(U, pdfdoc.id) is None)
+
 updated = repo.update(U, ex.id, {"title": "Renamed"})
 check("update renames", updated.title == "Renamed")
 

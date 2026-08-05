@@ -14,7 +14,7 @@ Tables:
 
 from __future__ import annotations
 
-from sqlalchemy import Text
+from sqlalchemy import LargeBinary, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Column, Field, SQLModel
 
@@ -87,6 +87,19 @@ class ReadingItem(SQLModel, table=True):
     position: float = Field(default=0.0, index=True)
     created_at: float = 0.0
     updated_at: float = 0.0
+
+
+class ReadingBlob(SQLModel, table=True):
+    """The original bytes of an uploaded PDF, so the client can render it as-is.
+
+    Kept out of ``reading_items`` so the tree/content queries never haul megabytes of
+    binary. One row per PDF document, keyed by the item id; deleted with its item.
+    """
+
+    __tablename__ = "reading_blobs"
+
+    item_id: str = Field(primary_key=True)
+    data: bytes = Field(sa_column=Column(LargeBinary, nullable=False))
 
 
 class Progress(SQLModel, table=True):

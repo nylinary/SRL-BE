@@ -38,6 +38,13 @@ nullable), `kind`, `title`, `content` (`TEXT`), `source_kind` (`'text'`/`'pdf'`,
 only), `position` (indexed, sort key), `created_at`, `updated_at`. Deleting an item removes
 its whole subtree. See `docs/reading.md`.
 
+### `reading_blobs`
+The original bytes of an uploaded PDF, so the client can render the document as-is (rather
+than showing server-extracted text). Kept in a **separate table** — not a column on
+`reading_items` — so the tree/content queries never haul megabytes of binary. Columns:
+`item_id` (PK = the document's id), `data` (`BYTEA`). One row per PDF document; deleted
+together with its item.
+
 ### `progress`
 One row per card = its FSRS scheduling state. `question_id` (PK) = the card id.
 `card_json` is the serialised `fsrs.Card`; `due`/`state` are denormalised for the picker;

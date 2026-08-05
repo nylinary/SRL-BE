@@ -13,7 +13,7 @@ import uuid
 
 from sqlmodel import Session, select
 
-from gitbook.models import ReadingItem
+from gitbook.models import ReadingBlob, ReadingItem
 
 
 class ReadingError(Exception):
@@ -54,19 +54,18 @@ def _looks_like_text(data: bytes) -> bool:
 
 
 def _pdf_text(data: bytes) -> str:
+    """Best-effort text extraction — the PDF is rendered as-is in the client, so an empty
+    result (scanned/image-only PDF) is fine; the raw bytes are what matter."""
     try:
         from pypdf import PdfReader
-    except ImportError as error:  # pragma: no cover
-        raise ReadingError("PDF support is not installed on the server.") from error
+    except ImportError:  # pragma: no cover
+        return ""
     try:
         reader = PdfReader(io.BytesIO(data))
         pages = [(page.extract_text() or "").strip() for page in reader.pages]
-    except Exception as error:
-        raise ReadingError(f"Could not read the PDF: {error}") from error
-    text = "\n\n".join(p for p in pages if p)
-    if not text.strip():
-        raise ReadingError("No selectable text found in the PDF (it may be scanned images).")
-    return text
+    except Exception:
+        return ""
+    return "\n\n".join(p for p in pages if p)
 
 
 # ---------------------------------------------------------------- repository
@@ -89,9 +88,23 @@ class ReadingRepository:
             session.refresh(item)
             return item
 
-    def create_document(self, user_id: str, title: str, content: str, source_kind: str) -> ReadingItem:
-        return self._new(user_id, parent_id=None, kind="document",
+    def create_document(self, user_id: str, title: str, content: str, source_kind: str,
+                        blob: bytes | None = None) -> ReadingItem:
+        item = self._new(user_id, parent_id=None, kind="document",
                          title=title or "Untitled", content=content, source_kind=source_kind)
+        if blob is not None:
+            with Session(self.engine) as session:
+                session.add(ReadingBlob(item_id=item.id, data=blob))
+                session.commit()
+        return item
+
+    def get_blob(self, user_id: str, item_id: str) -> bytes | None:
+        """The raw PDF bytes for a document the user owns, or None."""
+        if self.get(user_id, item_id) is None:
+            return None
+        with Session(self.engine) as session:
+            row = session.get(ReadingBlob, item_id)
+        return bytes(row.data) if row is not None else None
 
     def create_extract(self, user_id: str, parent_id: str, content: str, title: str = "") -> ReadingItem | None:
         parent = self.get(user_id, parent_id)
@@ -148,6 +161,9 @@ class ReadingRepository:
                 doomed.append(node)
                 stack.extend(children.get(node.id, []))
             for node in doomed:
+                blob = session.get(ReadingBlob, node.id)
+                if blob is not None:
+                    session.delete(blob)
                 session.delete(node)
             session.commit()
             return len(doomed)
