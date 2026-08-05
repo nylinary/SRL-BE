@@ -13,6 +13,7 @@ import re
 import secrets
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -255,11 +256,27 @@ def auth_login_password(body: LoginRequest):
     return {"token": _session_for(user), "user": _user_public(user)}
 
 
+def _valid_ext_redirect(url: str | None) -> bool:
+    """Only allow bouncing the token to a Chrome extension's own redirect URL."""
+    if not url:
+        return False
+    parsed = urlparse(url)
+    return parsed.scheme == "https" and bool(parsed.hostname) and parsed.hostname.endswith(".chromiumapp.org")
+
+
+def _append(base: str, key: str, value: str) -> str:
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}{key}={value}"
+
+
 @app.get("/api/auth/{provider}/login")
-def auth_login(provider: str):
+def auth_login(provider: str, redirect: str | None = None):
     if provider not in oauth.available_providers():
         raise HTTPException(status_code=404, detail="Provider not available")
-    state = issue_state(provider, secrets.token_urlsafe(16))
+    # `redirect` lets the browser extension receive the token at its chromiumapp.org URL
+    # instead of the web app. It's carried (signed) in the state and validated on return.
+    dest = redirect if _valid_ext_redirect(redirect) else None
+    state = issue_state(provider, secrets.token_urlsafe(16), dest)
     try:
         return RedirectResponse(oauth.authorize_url(provider, state))
     except OAuthError as error:
@@ -272,17 +289,19 @@ def auth_callback(provider: str, code: str | None = None, state: str | None = No
     front = settings.frontend_url or ""
     dest = f"{front}/#/auth/callback"
     if error or not code or not state:
-        return RedirectResponse(f"{dest}?error={error or 'login_failed'}")
+        return RedirectResponse(_append(dest, "error", error or "login_failed"))
     try:
         payload = read_state(state)
         if payload.get("provider") != provider:
             raise AuthError("state/provider mismatch")
+        if _valid_ext_redirect(payload.get("redirect")):
+            dest = payload["redirect"]        # send the token back to the extension
         profile = oauth.exchange(provider, code)
         user = users.upsert_from_profile(profile)
         token = _session_for(user)
     except (AuthError, OAuthError) as err:
-        return RedirectResponse(f"{dest}?error={type(err).__name__}")
-    return RedirectResponse(f"{dest}?token={token}")
+        return RedirectResponse(_append(dest, "error", type(err).__name__))
+    return RedirectResponse(_append(dest, "token", token))
 
 
 @app.get("/api/auth/me")

@@ -8,7 +8,7 @@ Base URL is the deployment origin. **Auth** column: 🔓 public · 🔐 Bearer J
 | Method | Path | Auth | Body / Query | Returns |
 |--------|------|:---:|--------------|---------|
 | GET | `/api/auth/providers` | 🔓 | — | `{providers: string[]}` (configured socials) |
-| GET | `/api/auth/{provider}/login` | 🔓 | — | 302 → provider |
+| GET | `/api/auth/{provider}/login` | 🔓 | `redirect?` | 302 → provider. `redirect` (a `*.chromiumapp.org` URL) makes the callback bounce the token to a Chrome extension instead of the web app |
 | GET | `/api/auth/{provider}/callback` | 🔓 | `code, state` | 302 → `{FRONTEND_URL}/#/auth/callback?token=…` |
 | POST | `/api/auth/register` | 🔓 | `{email, password, name?}` | `201 {token, user}` · `400` invalid · `409` taken |
 | POST | `/api/auth/login` | 🔓 | `{email, password}` | `{token, user}` · `401` wrong creds |

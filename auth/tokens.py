@@ -52,9 +52,10 @@ def read_session(token: str) -> dict:
 
 # ------------------------------------------------------------------ oauth state
 
-def issue_state(provider: str, nonce: str) -> str:
+def issue_state(provider: str, nonce: str, redirect: str | None = None) -> str:
     now = int(time.time())
-    payload = {"provider": provider, "nonce": nonce, "iat": now, "exp": now + 600, "typ": "state"}
+    payload = {"provider": provider, "nonce": nonce, "redirect": redirect,
+               "iat": now, "exp": now + 600, "typ": "state"}
     return jwt.encode(payload, _secret(), algorithm="HS256")
 
 
