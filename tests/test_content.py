@@ -89,6 +89,26 @@ check("code block keeps language", 'class="language-python"' in a_out and "print
 check("marks imported", "<strong>жир</strong>" in a_out and "<code>код</code>" in a_out)
 check("list imported", "<li><p>a</p></li>" in a_out and "<li><p>b</p></li>" in a_out)
 
+print("tables (render + parse round-trip, formatting inside cells)")
+table_doc = {"type": "doc", "content": [{"type": "table", "content": [
+    {"type": "tableRow", "content": [
+        {"type": "tableHeader", "attrs": {"colspan": 1, "rowspan": 1, "colwidth": None},
+         "content": [{"type": "paragraph", "content": [{"type": "text", "text": "H"}]}]}]},
+    {"type": "tableRow", "content": [
+        {"type": "tableCell", "attrs": {"colspan": 2, "rowspan": 1, "colwidth": None},
+         "content": [{"type": "paragraph", "content": [{"type": "text", "text": "x", "marks": [{"type": "bold"}]}]}]}]},
+]}]}
+t_html = render_doc(table_doc)
+check("table renders header + body", "<table><tbody>" in t_html and "<th><p>H</p></th>" in t_html)
+check("bold text inside a cell", "<td colspan=\"2\"><p><strong>x</strong></p></td>" in t_html, t_html)
+check("table text is searchable", doc_to_text(table_doc) == "H x")
+
+parsed = html_to_doc("<table><tr><th>A</th></tr><tr><td>y <em>i</em></td></tr></table>")
+check("html table -> table node", [n["type"] for n in parsed["content"]] == ["table"])
+cell = parsed["content"][0]["content"][1]["content"][0]
+check("cell has TipTap attrs", cell["attrs"] == {"colspan": 1, "rowspan": 1, "colwidth": None}, str(cell["attrs"]))
+check("cell keeps inline formatting", "<em>i</em>" in render_doc(parsed))
+
 print()
 if failures:
     print(f"{len(failures)} check(s) failed")

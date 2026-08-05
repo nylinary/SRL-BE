@@ -88,6 +88,18 @@ def _render_node(node: dict) -> str:
         return f"<li>{children}</li>"
     if kind == "blockquote":
         return f"<blockquote>{children}</blockquote>"
+    if kind == "table":
+        return f"<table><tbody>{children}</tbody></table>"
+    if kind == "tableRow":
+        return f"<tr>{children}</tr>"
+    if kind in ("tableCell", "tableHeader"):
+        tag = "th" if kind == "tableHeader" else "td"
+        span = ""
+        if int(attrs.get("colspan") or 1) > 1:
+            span += f' colspan="{int(attrs["colspan"])}"'
+        if int(attrs.get("rowspan") or 1) > 1:
+            span += f' rowspan="{int(attrs["rowspan"])}"'
+        return f"<{tag}{span}>{children}</{tag}>"
     return children  # doc or unknown wrapper — just emit children
 
 
@@ -99,6 +111,7 @@ def render_doc(doc: dict | None) -> str:
 
 _BLOCK_TYPES = {
     "paragraph", "heading", "codeBlock", "blockquote", "listItem", "horizontalRule",
+    "tableCell", "tableHeader", "tableRow",
 }
 
 
@@ -212,9 +225,8 @@ _INLINE_MARK_TAGS = {
 }
 # Tags that introduce a block; anything else in a block position is a transparent
 # container (div/figure/details/section/…) whose children are lifted up.
-_BLOCK_TAGS = {"p", "ul", "ol", "li", "pre", "blockquote", "hr", "summary", *_HEADING_TAGS}
-_CONTAINER_TAGS = {"div", "figure", "figcaption", "details", "section", "article", "table",
-                   "thead", "tbody", "tr", "td", "th"}
+_BLOCK_TAGS = {"p", "ul", "ol", "li", "pre", "blockquote", "hr", "summary", "table", *_HEADING_TAGS}
+_CONTAINER_TAGS = {"div", "figure", "figcaption", "details", "section", "article"}
 
 
 def _html_inline(node, marks: list) -> list:
@@ -314,6 +326,19 @@ def _html_block_node(node) -> dict | None:
         return block
     if name == "blockquote":
         return {"type": "blockquote", "content": _html_blocks(node) or [{"type": "paragraph"}]}
+    if name == "table":
+        rows = []
+        for tr in node.find_all("tr"):
+            cells = []
+            for cell in tr.find_all(["td", "th"], recursive=False):
+                cell_type = "tableHeader" if (cell.name or "").lower() == "th" else "tableCell"
+                attrs = {"colspan": int(cell.get("colspan") or 1),
+                         "rowspan": int(cell.get("rowspan") or 1), "colwidth": None}
+                cells.append({"type": cell_type, "attrs": attrs,
+                              "content": _html_blocks(cell) or [{"type": "paragraph"}]})
+            if cells:
+                rows.append({"type": "tableRow", "content": cells})
+        return {"type": "table", "content": rows} if rows else None
     if name == "hr":
         return {"type": "horizontalRule"}
     if name == "summary":  # nested <details> heading — keep as bold paragraph
