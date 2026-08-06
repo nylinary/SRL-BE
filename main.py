@@ -112,8 +112,11 @@ class ReadingUpdate(BaseModel):
 
 
 class MakeCardRequest(BaseModel):
-    question: str = ""
-    answer: str | None = None      # defaults to the extract's text when omitted
+    # ProseMirror docs (same rich-text format as CardIn); answer defaults to the extract's
+    # text when omitted/empty. Plain strings are still accepted and wrapped, for callers
+    # that don't build docs.
+    question: dict | str = Field(default_factory=lambda: {"type": "doc", "content": []})
+    answer: dict | str | None = None
     theme: str = ""
     subtheme: str = ""
     tags: list[str] = Field(default_factory=list)
@@ -572,10 +575,17 @@ def reading_make_card(item_id: str, body: MakeCardRequest, user: User = Depends(
     if limit > 0 and cards.created_since(user.id, time.time() - 86400) >= limit:
         raise HTTPException(status_code=429,
                             detail=f"Daily limit reached: at most {limit} new cards per 24 hours.")
-    answer_text = body.answer if body.answer is not None else item.content
+    def _as_doc(value) -> dict:
+        # Accept a ready ProseMirror doc, or wrap a plain string into paragraphs.
+        return value if isinstance(value, dict) else _text_doc(value or "")
+
+    answer = body.answer
+    answer_doc = _as_doc(answer) if answer not in (None, "") else _text_doc(item.content)
+    if isinstance(answer_doc, dict) and not answer_doc.get("content"):
+        answer_doc = _text_doc(item.content)  # empty editor → fall back to the extract text
     card = cards.create(user.id, {
-        "question": _text_doc(body.question),
-        "answer": _text_doc(answer_text),
+        "question": _as_doc(body.question),
+        "answer": answer_doc,
         "theme": body.theme, "subtheme": body.subtheme, "tags": body.tags,
         "source_extract_id": item.id,
     })

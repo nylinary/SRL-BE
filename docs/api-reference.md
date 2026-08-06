@@ -54,7 +54,7 @@ A per-user tree of documents/extracts; cards are minted from extracts. See `docs
 | POST | `/api/reading/items/{id}/extract` | 🔐 | Lift a selection into a child extract `{content, title?}`. `404` if parent not yours |
 | PATCH | `/api/reading/items/{id}` | 🔐 | Update `{title?, content?}`. `404` if not yours |
 | DELETE | `/api/reading/items/{id}` | 🔐 | Delete the item **and its whole subtree** → `{deleted:n}`. `404` if not yours |
-| POST | `/api/reading/items/{id}/card` | 🔐 | Make a card from the extract `{question, answer?, theme?, subtheme?}`; `answer` defaults to the extract text, `source_extract_id` is set. **`429`** over the daily limit |
+| POST | `/api/reading/items/{id}/card` | 🔐 | Make a card from the extract `{question, answer?, theme?, subtheme?, tags?}`. `question`/`answer` are ProseMirror docs (plain strings also accepted and wrapped); `answer` defaults to the extract text when empty. `source_extract_id` is set. **`429`** over the daily limit |
 
 ## Optimizer (per user)
 

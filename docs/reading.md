@@ -55,11 +55,14 @@ text (only the top-level document is a PDF).
 
 ## Making a card
 
-`POST /api/reading/items/{id}/card` with `{question, answer?, theme?, subtheme?}` creates a
-normal card via `CardRepository.create`:
+`POST /api/reading/items/{id}/card` with `{question, answer?, theme?, subtheme?, tags?}`
+creates a normal card via `CardRepository.create`:
 
-- `answer` **defaults to the extract's `content`** when omitted.
-- `question`/`answer` are wrapped into ProseMirror docs.
+- `question`/`answer` are **ProseMirror docs** — the client uses the same rich-text editor
+  (with formatting tools) as normal card creation. Plain strings are still accepted and
+  wrapped into paragraphs, for callers that don't build docs.
+- `answer` **defaults to the extract's `content`** (as paragraphs) when omitted or empty.
+  The client seeds the answer editor with it via `textToDoc`.
 - `source_extract_id` is stored on the card so it can be traced back to its extract.
 - The daily card limit applies (**`429`** when exceeded), same as `POST /api/cards`.
 
